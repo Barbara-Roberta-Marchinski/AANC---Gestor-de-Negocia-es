@@ -1,0 +1,8 @@
+﻿Filial;Tipo Documento;Empresa Referencia;Região;Cidade;Estado;Sindicato;Documento Referência;Vigência;Grupo Econômico;Observações
+G1;CCT;Categoria Metalúrgica;Grande Curitiba;São José dos Pinhais;PR;Sindicato dos Metalúrgicos da Grande Curitiba;CCT_Metalurgicos_Grande_Curitiba.pdf;2025-2026;Multiplas empresas;Convenção coletiva regional
+G2;ACT;General Motors do Brasil Ltda.;Gravataí;Gravataí;RS;Sindicato dos Metalúrgicos de Gravataí;ACT_Sintetico_Gravatai_GM.pdf;2025-2026;General Motors;Planta automotiva GM
+G3;ACT;Stellantis Automóveis Brasil Ltda.;Betim;Betim;MG;Sindicato dos Metalúrgicos de Betim;ACT_Sintetico_Betim_Stellantis.pdf;2025-2027;Stellantis;Unidade Fiat/Stellantis
+G4;ACT;Hyundai Motor Brasil;Piracicaba;Piracicaba;SP;Sindicato dos Metalúrgicos de Piracicaba e Região;ACT_Sintetico_Piracicaba_Hyundai.pdf;2025-2026;Hyundai Motor Brasil;Planta Hyundai
+G5;ACT;Montadora Alpha Motors do Brasil;ABC Paulista;São Bernardo do Campo;SP;Sindicato dos Metalúrgicos do ABC;ACT_Sintetico_ABC_Paulista.pdf;2025-2026;Grupo Alpha Motors;Base sindical ABC
+G6;CCT;Categoria Metalúrgica;Sorocaba;Sorocaba;SP;Sindicato dos Metalúrgicos de Sorocaba;CCT_Metalurgicos_Sorocaba.pdf;2025-2026;Multiplas empresas;Convenção coletiva regional
+G7;ACT;Auto Parts Industrial Systems Ltda.;ABC Paulista;Diadema;SP;Sindicato dos Metalúrgicos do ABC;ACT_Componentes_ABC.pdf;2025-2026;Sistemista automotiva;Fornecedor automotivo do polo ABC

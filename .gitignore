@@ -1,0 +1,19 @@
+# Segurança e Variáveis
+.env
+
+# Ambiente Virtual
+env_aanc/
+venv/
+
+# Banco de Dados (O culpado do erro!)
+*.db
+data/*.db
+
+# Python e Cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Streamlit e IDE
+.streamlit/
+.vscode/
