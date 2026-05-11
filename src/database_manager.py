@@ -53,6 +53,13 @@ class DataManager:
             """)
             print("Tabela 'referencias_sindicais' inicializada com sucesso.")
 
+            # Carregar benchmark_mercado.csv
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS benchmark_mercado AS
+                SELECT * FROM read_csv_auto('data/benchmark_mercado.csv')
+            """)
+            print("Tabela 'benchmark_mercado' inicializada com sucesso.")
+
         except FileNotFoundError as e:
             raise Exception(f"Arquivo CSV não encontrado: {str(e)}. Verifique se os arquivos estão na pasta 'data'.")
         except Exception as e:
@@ -232,6 +239,33 @@ class DataManager:
             }
         except Exception as e:
             raise Exception(f"Erro ao simular cenário para a planta {planta_id}: {str(e)}")
+
+    def obter_benchmark(self, planta_id):
+        """
+        Obtém dados de benchmark de mercado para uma planta específica.
+
+        Args:
+            planta_id (str): Identificador da planta (ex: 'G1').
+
+        Returns:
+            pd.DataFrame: DataFrame com dados de benchmark da concorrência para a planta.
+
+        Raises:
+            Exception: Se não houver dados de benchmark para a planta.
+        """
+        try:
+            # Carregar benchmark do mercado usando pandas devido ao formato especial do CSV
+            df = pd.read_csv('data/benchmark_mercado.csv', sep=';', quotechar='"')
+
+            # Filtrar pela planta
+            df_filtrado = df[df['Filial'] == planta_id]
+
+            if df_filtrado.empty:
+                raise Exception(f"Nenhum dado de benchmark encontrado para a planta '{planta_id}'.")
+
+            return df_filtrado
+        except Exception as e:
+            raise Exception(f"Erro ao obter benchmark para a planta {planta_id}: {str(e)}")
 
     def obter_documentos_por_planta(self, planta_id):
         """

@@ -224,6 +224,20 @@ if prompt := st.chat_input("Digite sua pergunta sobre negociações ou cálculos
                                 'Incremental': 'R$ {:,.2f}'
                             }))
 
+                    if 'benchmark_dados' in resultado:
+                        with st.expander("Dados de Benchmark de Mercado"):
+                            benchmark_df = pd.DataFrame(resultado['benchmark_dados'])
+                            st.dataframe(benchmark_df)
+
+                            if 'nossa_pratica' in resultado and resultado['nossa_pratica']:
+                                st.subheader("Nossa Prática Atual")
+                                pratica_df = pd.DataFrame(resultado['nossa_pratica'])
+                                st.dataframe(pratica_df.style.format({
+                                    'salario_medio': 'R$ {:,.2f}',
+                                    'va_medio': 'R$ {:,.2f}',
+                                    'plr_medio': 'R$ {:,.2f}'
+                                }))
+
                     st.markdown("### Resposta:")
                     st.markdown(resultado.get('resposta', 'Nenhuma resposta gerada.'))
 

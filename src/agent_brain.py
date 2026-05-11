@@ -49,28 +49,29 @@ class AANC_Agent:
 
     def _classificar_intencao(self, pergunta):
         """
-        Classifica a intenção da pergunta usando Gemini: 'CÁLCULO', 'POLÍTICA' ou 'CÁLCULO_FINANCEIRO'.
+        Classifica a intenção da pergunta usando Gemini: 'CÁLCULO', 'POLÍTICA', 'CÁLCULO_FINANCEIRO' ou 'BENCHMARK'.
 
         Args:
             pergunta (str): A pergunta do usuário.
 
         Returns:
-            str: 'CÁLCULO', 'POLÍTICA', 'CÁLCULO_FINANCEIRO' ou None se não for possível classificar.
+            str: 'CÁLCULO', 'POLÍTICA', 'CÁLCULO_FINANCEIRO', 'BENCHMARK' ou None se não for possível classificar.
         """
-        prompt = f"""Classifique a seguinte pergunta como 'CÁLCULO', 'POLÍTICA' ou 'CÁLCULO_FINANCEIRO':
+        prompt = f"""Classifique a seguinte pergunta como 'CÁLCULO', 'POLÍTICA', 'CÁLCULO_FINANCEIRO' ou 'BENCHMARK':
 
 - CÁLCULO: perguntas sobre salários, PLR, impacto financeiro, cálculos de benefícios, etc. (consultas gerais de dados)
 - POLÍTICA: perguntas sobre cláusulas, regras, procedimentos, textos de documentos, jornadas, políticas.
 - CÁLCULO_FINANCEIRO: perguntas sobre impacto, reajuste, aumento, simulação de custos, cenários financeiros, percentuais (%).
+- BENCHMARK: perguntas sobre concorrência, mercado, práticas de outras empresas (Fiat, Renault, Hyundai, VW, etc.), comparações com o mercado.
 
 Pergunta: "{pergunta}"
 
-Responda apenas com uma das palavras: 'CÁLCULO', 'POLÍTICA' ou 'CÁLCULO_FINANCEIRO'."""
+Responda apenas com uma das palavras: 'CÁLCULO', 'POLÍTICA', 'CÁLCULO_FINANCEIRO' ou 'BENCHMARK'."""
 
         try:
             response = self.client.models.generate_content(model='gemini-flash-latest', contents=prompt)
             intencao = response.text.strip().upper()
-            if intencao in ['CÁLCULO', 'POLÍTICA', 'CÁLCULO_FINANCEIRO']:
+            if intencao in ['CÁLCULO', 'POLÍTICA', 'CÁLCULO_FINANCEIRO', 'BENCHMARK']:
                 return intencao
             return None
         except Exception as e:
@@ -155,6 +156,8 @@ Responda apenas com um JSON válido no formato:
                 return self._processar_calculo(pergunta, planta_id)
             elif intencao == 'CÁLCULO_FINANCEIRO':
                 return self._processar_simulacao_financeira(pergunta, planta_id)
+            elif intencao == 'BENCHMARK':
+                return self._processar_benchmark(pergunta, planta_id)
             return self._processar_politica(pergunta, planta_id, arquivos_permitidos)
 
         except Exception as e:
@@ -260,6 +263,73 @@ Responda em português, focando nos impactos principais."""
                 "tipo": "CÁLCULO_FINANCEIRO",
                 "contexto": planta_id,
                 "resposta": f"Não consegui processar a simulação financeira. Verifique se os percentuais estão corretos. Erro: {str(e)}"
+            }
+
+    def _processar_benchmark(self, pergunta, planta_id):
+        """
+        Processa perguntas sobre benchmark de mercado, comparando nossa prática com a concorrência.
+
+        Args:
+            pergunta (str): A pergunta sobre benchmark/concorrência.
+            planta_id (str): O ID da planta.
+
+        Returns:
+            dict: Resposta estruturada com comparação consultiva.
+        """
+        try:
+            # Obter dados de benchmark da concorrência
+            benchmark_df = self.dm.obter_benchmark(planta_id)
+
+            # Obter dados atuais da nossa prática (médias por planta)
+            query_nossa_pratica = f"""
+                SELECT
+                    AVG(salario_atual) as salario_medio,
+                    AVG(valor_va_atual) as va_medio,
+                    AVG(plr_alvo_atual) as plr_medio,
+                    COUNT(*) as num_colaboradores
+                FROM headcount
+                WHERE planta = '{planta_id}'
+            """
+            nossa_pratica_df = self.dm.executar_consulta(query_nossa_pratica)
+
+            # Preparar dados para o Gemini
+            benchmark_texto = benchmark_df.to_string(index=False)
+            nossa_pratica_texto = nossa_pratica_df.to_string(index=False)
+
+            # Instruir Gemini a comparar e dar resposta consultiva
+            prompt = f"""Analise a seguinte pergunta sobre benchmark de mercado e forneça uma resposta consultiva comparando nossa prática com a concorrência.
+
+PERGUNTA: "{pergunta}"
+
+NOSSA PRÁTICA ATUAL (dados da planta {planta_id}):
+{nossa_pratica_texto}
+
+PRÁTICA DO MERCADO (benchmark da concorrência):
+{benchmark_texto}
+
+INSTRUÇÕES PARA RESPOSTA:
+1. Compare sempre: "Nossa Prática (SQL)" vs "Prática do Mercado (Benchmark)"
+2. Seja consultivo: indique se estamos acima/abaixo/na média do mercado
+3. Destaque pontos fortes e oportunidades de melhoria
+4. Considere fatores como região, porte da empresa e tendências do setor
+5. Sugira ações práticas baseadas na comparação
+
+Responda em português de forma clara e objetiva."""
+
+            response = self.client.models.generate_content(model='gemini-flash-latest', contents=prompt)
+
+            return {
+                "tipo": "BENCHMARK",
+                "contexto": planta_id,
+                "benchmark_dados": benchmark_df.to_dict('records'),
+                "nossa_pratica": nossa_pratica_df.to_dict('records'),
+                "resposta": response.text.strip()
+            }
+        except Exception as e:
+            return {
+                "tipo": "BENCHMARK",
+                "contexto": planta_id,
+                "resposta": f"Não consegui processar a análise de benchmark. Verifique se há dados de concorrência disponíveis para a planta {planta_id}. Erro: {str(e)}"
             }
 
     def _processar_politica(self, pergunta, planta_id, arquivos_permitidos):
