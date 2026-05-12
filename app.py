@@ -1,5 +1,6 @@
 """Aplicação Streamlit do AANC para simulação financeira, chat de dúvidas e filtro por planta."""
 
+import re
 import streamlit as st
 import pandas as pd
 from src.agent_brain import AANC_Agent
@@ -19,6 +20,7 @@ if 'agent' not in st.session_state or st.session_state.agent is None:
     try:
         st.session_state.agent = AANC_Agent()
         st.session_state.agent_initialized = True
+        st.session_state.sinonimos_map = st.session_state.agent.dm.get_mapa_sinonimos()
     except Exception as e:
         st.session_state.agent_initialized = False
         st.error(f"Erro ao inicializar o agente: {str(e)}")
@@ -27,6 +29,7 @@ else:
         try:
             st.session_state.agent = AANC_Agent()
             st.session_state.agent_initialized = True
+            st.session_state.sinonimos_map = st.session_state.agent.dm.get_mapa_sinonimos()
         except Exception as e:
             st.session_state.agent_initialized = False
             st.error(f"Erro ao reinicializar o agente: {str(e)}")
@@ -149,16 +152,29 @@ if prompt := st.chat_input("Digite sua pergunta sobre negociações ou cálculos
     if not st.session_state.get('agent_initialized', False):
         st.error("Sistema em manutenção temporária. Por favor, tente em instantes.")
     else:
+        # Detectar sinônimos de planta no texto da pergunta
+        texto_pergunta = prompt.lower()
+        planta_override = None
+        for sinonimo, planta_destino in (st.session_state.sinonimos_map or {}).items():
+            if re.search(rf'\b{re.escape(sinonimo)}\b', texto_pergunta):
+                planta_override = planta_destino
+                break
+
+        contexto_planta = planta_override or planta_id
+
         # Adicionar mensagem do usuário
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
 
+        if planta_override:
+            st.info(f"Contexto de planta definido por sinônimo: {planta_override}")
+
         # Processar pergunta
         with st.chat_message("assistant"):
             with st.spinner("Processando sua pergunta..."):
                 try:
-                    resultado = st.session_state.agent.processar_pergunta(prompt, planta_id)
+                    resultado = st.session_state.agent.processar_pergunta(prompt, contexto_planta)
 
                     # Verificar indicador de risco
                     resposta_texto = resultado.get('resposta', '').lower()

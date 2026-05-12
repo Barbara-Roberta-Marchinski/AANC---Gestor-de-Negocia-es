@@ -3,10 +3,10 @@
 import os
 from dotenv import load_dotenv
 try:
-    from database_manager import DataManager
+    from database_manager import DatabaseManager
     from rag_engine import DocumentAssistant
 except ImportError:
-    from src.database_manager import DataManager
+    from src.database_manager import DatabaseManager
     from src.rag_engine import DocumentAssistant
 
 from google import genai
@@ -15,19 +15,19 @@ load_dotenv()
 
 class AANC_Agent:
     """
-    Classe orquestradora que integra o DataManager (SQL) e DocumentAssistant (RAG).
+    Classe orquestradora que integra o DatabaseManager (SQL) e DocumentAssistant (RAG).
     Utiliza Gemini para classificar a intenção da pergunta e rotear para o módulo apropriado.
     """
 
     def __init__(self):
         """
-        Inicializa o agente com DataManager, DocumentAssistant e Gemini.
+        Inicializa o agente com DatabaseManager, DocumentAssistant e Gemini.
         """
         try:
-            # Inicializar DataManager
-            self.dm = DataManager()
-            self.dm.inicializar_tabelas()
-            print("DataManager inicializado com sucesso.")
+            # Inicializar DatabaseManager
+            self.dm = DatabaseManager()
+            self.dm.inicializar_tabelas_limpas()
+            print("DatabaseManager inicializado com sucesso.")
 
             # Inicializar DocumentAssistant
             self.da = DocumentAssistant()
@@ -49,29 +49,30 @@ class AANC_Agent:
 
     def _classificar_intencao(self, pergunta):
         """
-        Classifica a intenção da pergunta usando Gemini: 'CÁLCULO', 'POLÍTICA', 'CÁLCULO_FINANCEIRO' ou 'BENCHMARK'.
+        Classifica a intenção da pergunta usando Gemini: 'CÁLCULO', 'POLÍTICA', 'CÁLCULO_FINANCEIRO', 'BENCHMARK' ou 'CONSULTA_ESTRATEGICA'.
 
         Args:
             pergunta (str): A pergunta do usuário.
 
         Returns:
-            str: 'CÁLCULO', 'POLÍTICA', 'CÁLCULO_FINANCEIRO', 'BENCHMARK' ou None se não for possível classificar.
+            str: 'CÁLCULO', 'POLÍTICA', 'CÁLCULO_FINANCEIRO', 'BENCHMARK', 'CONSULTA_ESTRATEGICA' ou None se não for possível classificar.
         """
-        prompt = f"""Classifique a seguinte pergunta como 'CÁLCULO', 'POLÍTICA', 'CÁLCULO_FINANCEIRO' ou 'BENCHMARK':
+        prompt = f"""Classifique a seguinte pergunta como 'CÁLCULO', 'POLÍTICA', 'CÁLCULO_FINANCEIRO', 'BENCHMARK' ou 'CONSULTA_ESTRATEGICA':
 
 - CÁLCULO: perguntas sobre salários, PLR, impacto financeiro, cálculos de benefícios, etc. (consultas gerais de dados)
 - POLÍTICA: perguntas sobre cláusulas, regras, procedimentos, textos de documentos, jornadas, políticas.
 - CÁLCULO_FINANCEIRO: perguntas sobre impacto, reajuste, aumento, simulação de custos, cenários financeiros, percentuais (%).
 - BENCHMARK: perguntas sobre concorrência, mercado, práticas de outras empresas (Fiat, Renault, Hyundai, VW, etc.), comparações com o mercado.
+- CONSULTA_ESTRATEGICA: perguntas genéricas sobre reajuste, 'como está', mercado ou benchmark de uma empresa/planta, onde o agente deve comparar benchmark de mercado com o ACT/CCT da planta.
 
 Pergunta: "{pergunta}"
 
-Responda apenas com uma das palavras: 'CÁLCULO', 'POLÍTICA', 'CÁLCULO_FINANCEIRO' ou 'BENCHMARK'."""
+Responda apenas com uma das palavras: 'CÁLCULO', 'POLÍTICA', 'CÁLCULO_FINANCEIRO', 'BENCHMARK' ou 'CONSULTA_ESTRATEGICA'."""
 
         try:
             response = self.client.models.generate_content(model='gemini-flash-latest', contents=prompt)
             intencao = response.text.strip().upper()
-            if intencao in ['CÁLCULO', 'POLÍTICA', 'CÁLCULO_FINANCEIRO', 'BENCHMARK']:
+            if intencao in ['CÁLCULO', 'POLÍTICA', 'CÁLCULO_FINANCEIRO', 'BENCHMARK', 'CONSULTA_ESTRATEGICA']:
                 return intencao
             return None
         except Exception as e:
@@ -146,11 +147,10 @@ Responda apenas com um JSON válido no formato:
             # Classificar intenção
             intencao = self._classificar_intencao(pergunta)
             if not intencao:
-                return {
-                    "tipo": "ERRO",
-                    "contexto": planta_id,
-                    "resposta": "Pergunta ambígua. Por favor, seja mais específico sobre se deseja um cálculo numérico ou uma resposta baseada em texto de políticas e cláusulas."
-                }
+                if self._detectar_consulta_estrategica(pergunta):
+                    intencao = 'CONSULTA_ESTRATEGICA'
+                else:
+                    intencao = 'POLÍTICA'
 
             if intencao == 'CÁLCULO':
                 return self._processar_calculo(pergunta, planta_id)
@@ -158,6 +158,8 @@ Responda apenas com um JSON válido no formato:
                 return self._processar_simulacao_financeira(pergunta, planta_id)
             elif intencao == 'BENCHMARK':
                 return self._processar_benchmark(pergunta, planta_id)
+            elif intencao == 'CONSULTA_ESTRATEGICA':
+                return self._processar_consulta_estrategica(pergunta, planta_id, arquivos_permitidos)
             return self._processar_politica(pergunta, planta_id, arquivos_permitidos)
 
         except Exception as e:
@@ -165,6 +167,87 @@ Responda apenas com um JSON válido no formato:
                 "tipo": "ERRO",
                 "contexto": planta_id,
                 "resposta": f"Desculpe, não consegui processar sua pergunta. Por favor, reformule a pergunta e tente novamente. Erro: {str(e)}"
+            }
+
+    def _detectar_consulta_estrategica(self, pergunta):
+        """
+        Detecta perguntas genéricas de consulta estratégica sobre reajuste, mercado ou benchmark.
+        """
+        texto = pergunta.lower()
+        palavras_chave = [
+            'reajuste',
+            'como está',
+            'como esta',
+            'mercado',
+            'benchmark',
+            'praticado',
+            'acordo coletivo',
+            'act',
+            'cct'
+        ]
+        return any(p in texto for p in palavras_chave)
+
+    def _processar_consulta_estrategica(self, pergunta, planta_id, arquivos_permitidos):
+        """
+        Processa perguntas genéricas de consulta estratégica usando benchmark e contexto ACT/CCT.
+
+        Args:
+            pergunta (str): A pergunta do usuário.
+            planta_id (str): O ID da planta.
+            arquivos_permitidos (list): Lista de arquivos permitidos.
+
+        Returns:
+            dict: Resposta estruturada.
+        """
+        try:
+            benchmark_df = self.dm.obter_benchmark(planta_id)
+            if isinstance(benchmark_df, dict):
+                return {
+                    "tipo": "CONSULTA_ESTRATEGICA",
+                    "contexto": planta_id,
+                    "resposta": benchmark_df.get('message', 'Dados de benchmark não cadastrados para esta unidade.'),
+                    "documentos_consultados": [],
+                    "benchmark_dados": []
+                }
+
+            contextos = self.da.buscar_contexto_especifico(pergunta, arquivos_permitidos)
+            contexto_texto = "\n---\n".join([c["text"] for c in contextos])
+            arquivos_consultados = [c["file"] for c in contextos]
+
+            prompt = f"""Você é um assistente consultivo que responde perguntas sobre prática de mercado e documentos trabalhistas.
+
+Para a planta {planta_id}, o mercado (Benchmark) praticou os valores abaixo. Já o nosso documento ACT/CCT da planta prevê os valores e as regras descritas no contexto. Não diga que a pergunta é ambígua.
+
+PERGUNTA: "{pergunta}"
+
+BENCHMARK:
+{benchmark_df.to_string(index=False)}
+
+CONTEXTOS DO ACT/CCT:
+{contexto_texto}
+
+INSTRUÇÕES:
+1. Informe claramente o percentual de mercado e indique que o documento ACT/CCT traz a previsão da planta.
+2. Faça uma comparação consultiva entre benchmark e documento.
+3. Seja objetivo e evite respostas vagas.
+4. Inclua um breve resumo das diferenças ou similaridades.
+
+Responda em português, usando a frase: "Para a [Empresa/Planta], o mercado (Benchmark) praticou X%. Já o nosso documento (ACT/CCT) prevê Y.""" 
+
+            response = self.client.models.generate_content(model='gemini-flash-latest', contents=prompt)
+
+            return {
+                "tipo": "CONSULTA_ESTRATEGICA",
+                "contexto": planta_id,
+                "benchmark_dados": benchmark_df.to_dict('records'),
+                "documentos_consultados": arquivos_consultados,
+                "resposta": response.text.strip()
+            }
+        except Exception as e:
+            return {
+                "tipo": "CONSULTA_ESTRATEGICA",
+                "contexto": planta_id,
+                "resposta": f"Não consegui processar a consulta estratégica. Verifique se há dados de benchmark e documentos ACT/CCT disponíveis para a planta {planta_id}. Erro: {str(e)}"
             }
 
     def _processar_calculo(self, pergunta, planta_id):
@@ -279,6 +362,13 @@ Responda em português, focando nos impactos principais."""
         try:
             # Obter dados de benchmark da concorrência
             benchmark_df = self.dm.obter_benchmark(planta_id)
+            if isinstance(benchmark_df, dict):
+                return {
+                    "tipo": "BENCHMARK",
+                    "contexto": planta_id,
+                    "resposta": benchmark_df.get('message', 'Dados de benchmark não cadastrados para esta unidade.'),
+                    "benchmark_dados": []
+                }
 
             # Obter dados atuais da nossa prática (médias por planta)
             query_nossa_pratica = f"""

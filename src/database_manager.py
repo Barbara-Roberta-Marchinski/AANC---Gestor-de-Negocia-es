@@ -1,69 +1,128 @@
 """Módulo responsável por gerenciar o armazenamento e os cálculos de custos no DuckDB."""
-
+import os
 import duckdb
 import pandas as pd
+import os
+import pandas as pd
 
-class DataManager:
-    """
-    Classe responsável por gerenciar a conexão com o banco de dados DuckDB e operações relacionadas.
-    """
+# 1. Descobrir onde o script atual está salvo (ex: C:/.../src/database_manager.py)
+caminho_atual = os.path.abspath(__file__)
+diretorio_do_script = os.path.dirname(caminho_atual)
 
-    def __init__(self, db_path='data/aanc_gestamp.db'):
+# 2. Subir um nível para chegar na raiz do projeto (IA-Factor)
+# Se o script estiver em 'src', subimos um nível. Se estiver na raiz, ficamos nela.
+if diretorio_do_script.endswith('src'):
+    raiz_projeto = os.path.dirname(diretorio_do_script)
+else:
+    raiz_projeto = diretorio_do_script
+
+# 3. Definir o caminho exato para a pasta 'data'
+pasta_data = os.path.join(raiz_projeto, 'data')
+
+print(f"📍 Pasta de dados identificada em: {pasta_data}")
+
+def carregar_dados(nome_arquivo):
+    caminho_completo = os.path.join(pasta_data, nome_arquivo)
+    
+    if not os.path.exists(caminho_completo):
+        raise FileNotFoundError(f"❌ Erro crítico: O arquivo {nome_arquivo} não existe em {pasta_data}")
+    
+    return pd.read_csv(caminho_completo, sep=';', encoding='utf-8-sig')
+
+
+
+
+
+
+class DatabaseManager:
+    def __init__(self, db_path=None):
+        # Descobre onde este arquivo (database_manager.py) está
+        self.base_dir = os.path.dirname(os.path.abspath(__file__))
+    # Sobe um nível para achar a pasta 'data' que está na raiz
+        self.project_root = os.path.dirname(self.base_dir)
+    
+        if db_path is None:
+        # Define o caminho para o banco dentro de 'data'
+            self.db_path = os.path.join(self.project_root, 'data', 'aanc_gestamp.db')
+        else:
+            self.db_path = db_path
+        
+        self.conn = duckdb.connect(database=self.db_path)
+        self.pasta_data = os.path.join(self.project_root, 'data')
+    
+    # Inicializa as tabelas usando a lógica do Pandas que limpamos antes
+        self.inicializar_tabelas_limpas()
+        
+
+    def inicializar_tabelas_limpas(self):
+        """Versão Ultra-Resistente: Resolve o erro de benchmark e garante os dados"""
+        arquivos = {
+            'benchmark_mercado.csv': 'benchmark',
+            'mapeamento_sinonimos.csv': 'sinonimos',
+            'headcount.csv': 'headcount',
+            'premissas_plantas.csv': 'premissas'
+        }
+
+        for arquivo, tabela in arquivos.items():
+            caminho_csv = os.path.join(self.pasta_data, arquivo)
+            
+            if os.path.exists(caminho_csv):
+                try:
+                    # Se for o benchmark, usamos o separador ';' que vimos no erro
+                    if tabela == 'benchmark':
+                        df = pd.read_csv(caminho_csv, sep=';', encoding='utf-8-sig', on_bad_lines='skip')
+                    else:
+                        # Para os outros, deixamos o Pandas tentar adivinhar
+                        df = pd.read_csv(caminho_csv, sep=None, engine='python', encoding='utf-8-sig')
+                    
+                    # Limpeza total dos nomes das colunas
+                    df.columns = [str(c).replace('"', '').strip() for c in df.columns]
+                    
+                    # Garante que a primeira coluna do benchmark se chame 'Filial'
+                    if tabela == 'benchmark':
+                        df.rename(columns={df.columns[0]: 'Filial'}, inplace=True)
+                        # Limpa espaços dentro da coluna Filial (ex: 'G1 ' vira 'G1')
+                        df['Filial'] = df['Filial'].astype(str).str.strip()
+
+                    self.conn.register('df_temp', df)
+                    self.conn.execute(f"CREATE OR REPLACE TABLE {tabela} AS SELECT * FROM df_temp")
+                    self.conn.unregister('df_temp')
+                    print(f"✅ {tabela} carregada e pronta para o combate!")
+                    
+                except Exception as e:
+                    print(f"❌ Erro fatal ao carregar {arquivo}: {e}")
+
+    def fechar_conexao(self):
+        self.con.close()
+
+    def get_mapa_sinonimos(self):
         """
-        Construtor da classe DataManager.
+        Lê o arquivo de mapeamento de sinônimos e retorna um dicionário de sinônimos para planta.
 
-        Conecta-se ao arquivo DuckDB especificado. Se o arquivo não existir, será criado.
+        O CSV esperado é `data/mapeamento_sinonimos.csv` com separador `;`.
+        Cada linha contém um ID de planta e seus sinônimos separados por vírgula.
 
-        Args:
-            db_path (str): Caminho para o arquivo do banco de dados DuckDB. Padrão: 'data/aanc_gestamp.db'.
+        Returns:
+            dict: Dicionário onde cada sinônimo em minúsculas é chave e o ID da planta é valor.
+
+        Raises:
+            Exception: Se o arquivo de mapeamento não for encontrado ou não puder ser lido.
         """
         try:
-            self.conn = duckdb.connect(db_path)
-            print(f"Conexão estabelecida com o banco de dados: {db_path}")
-        except Exception as e:
-            raise Exception(f"Erro ao conectar ao banco de dados: {str(e)}")
+            df = pd.read_csv('data/mapeamento_sinonimos.csv', sep=';', quotechar='"')
+            mapa = {}
 
-    def inicializar_tabelas(self):
-        """
-        Inicializa as tabelas carregando dados dos arquivos CSV.
+            for _, row in df.iterrows():
+                planta_id = str(row.get('Planta') or row.get('planta') or row.get('ID') or row.get('id')).strip()
+                sinonimos = str(row.get('Sinonimos') or row.get('sinônimos') or row.get('Sinônimos') or '').strip()
+                for sin in [s.strip().lower() for s in sinonimos.split(',') if s.strip()]:
+                    mapa[sin] = planta_id
 
-        Carrega automaticamente 'data/headcount.csv' para a tabela 'headcount',
-        'data/premissas_plantas.csv' para a tabela 'premissas' e
-        'data/Relação_sindicato_planta.csv' para a tabela 'referencias_sindicais'.
-        """
-        try:
-            # Carregar headcount.csv
-            self.conn.execute("""
-                CREATE TABLE IF NOT EXISTS headcount AS
-                SELECT * FROM read_csv_auto('data/headcount.csv')
-            """)
-            print("Tabela 'headcount' inicializada com sucesso.")
-
-            # Carregar premissas_plantas.csv
-            self.conn.execute("""
-                CREATE TABLE IF NOT EXISTS premissas AS
-                SELECT * FROM read_csv_auto('data/premissas_plantas.csv')
-            """)
-            print("Tabela 'premissas' inicializada com sucesso.")
-
-            # Carregar Relação_sindicato_planta.csv
-            self.conn.execute("""
-                CREATE TABLE IF NOT EXISTS referencias_sindicais AS
-                SELECT * FROM read_csv_auto('data/Relação_sindicato_planta.csv')
-            """)
-            print("Tabela 'referencias_sindicais' inicializada com sucesso.")
-
-            # Carregar benchmark_mercado.csv
-            self.conn.execute("""
-                CREATE TABLE IF NOT EXISTS benchmark_mercado AS
-                SELECT * FROM read_csv_auto('data/benchmark_mercado.csv')
-            """)
-            print("Tabela 'benchmark_mercado' inicializada com sucesso.")
-
+            return mapa
         except FileNotFoundError as e:
-            raise Exception(f"Arquivo CSV não encontrado: {str(e)}. Verifique se os arquivos estão na pasta 'data'.")
+            raise Exception(f"Arquivo de mapeamento de sinônimos não encontrado: {str(e)}")
         except Exception as e:
-            raise Exception(f"Erro ao inicializar tabelas: {str(e)}. Verifique os arquivos CSV e tente novamente.")
+            raise Exception(f"Erro ao ler o mapeamento de sinônimos: {str(e)}")
 
     def executar_consulta(self, sql_query):
         """
@@ -223,6 +282,7 @@ class DataManager:
                     'Custo Salário Projetado Anual': round(salario_projetado_anual, 2),
                     'Custo VA Atual Anual': round(va_atual_anual, 2),
                     'Custo VA Projetado Anual': round(va_projetado_anual, 2),
+        
                     'Custo PLR Atual Anual': round(plr_atual_anual, 2),
                     'Custo PLR Projetado Anual': round(plr_projetado_anual, 2),
                     'Salário Base Atual': round(soma_salario_atual, 2),
@@ -241,32 +301,17 @@ class DataManager:
             raise Exception(f"Erro ao simular cenário para a planta {planta_id}: {str(e)}")
 
     def obter_benchmark(self, planta_id):
-        """
-        Obtém dados de benchmark de mercado para uma planta específica.
-
-        Args:
-            planta_id (str): Identificador da planta (ex: 'G1').
-
-        Returns:
-            pd.DataFrame: DataFrame com dados de benchmark da concorrência para a planta.
-
-        Raises:
-            Exception: Se não houver dados de benchmark para a planta.
-        """
         try:
-            # Carregar benchmark do mercado usando pandas devido ao formato especial do CSV
-            df = pd.read_csv('data/benchmark_mercado.csv', sep=';', quotechar='"')
-
-            # Filtrar pela planta
-            df_filtrado = df[df['Filial'] == planta_id]
+            # O UPPER garante que ele ache 'G1' mesmo que venha 'g1' do site
+            query = f"SELECT * FROM benchmark WHERE UPPER(Filial) = UPPER('{planta_id}')"
+            df_filtrado = self.conn.execute(query).df()
 
             if df_filtrado.empty:
-                raise Exception(f"Nenhum dado de benchmark encontrado para a planta '{planta_id}'.")
-
+                return {'message': f'Sem dados de benchmark para {planta_id}.'}
             return df_filtrado
         except Exception as e:
-            raise Exception(f"Erro ao obter benchmark para a planta {planta_id}: {str(e)}")
-
+            return {'message': f"Erro no banco: {str(e)}"}
+    
     def obter_documentos_por_planta(self, planta_id):
         """
         Obtém a lista de documentos de referência associados a uma planta específica.
@@ -288,22 +333,30 @@ class DataManager:
             raise Exception(f"Erro ao obter documentos para a planta {planta_id}: {str(e)}")
 
 if __name__ == '__main__':
-    # Instanciar a classe DataManager
-    dm = DataManager()
+    # 1. Instanciar a classe
+    dm = DatabaseManager()
 
-    # Inicializar as tabelas
-    dm.inicializar_tabelas()
+    # 2. Inicializar as tabelas (isso limpa os CSVs e cria o banco .db)
+    dm.inicializar_tabelas_limpas()
 
-    # Executar consulta para total de colaboradores e média salarial da planta 'G1'
-    query = """
+    # --- TESTE 1: Headcount e Premissas (O que você já tinha) ---
+    query_folha = """
     SELECT COUNT(*) as total_colaboradores, AVG(h.salario_atual) as media_salarial
     FROM headcount h
     JOIN premissas p ON h.planta = p.planta
     WHERE p.planta = 'G1'
     """
     try:
-        resultado = dm.executar_consulta(query)
-        print("Resultado da consulta para a planta 'G1':")
-        print(resultado)
+        resultado_folha = dm.executar_consulta(query_folha)
+        print("\n📊 Resultado da Folha (G1):")
+        print(resultado_folha)
     except Exception as e:
-        print(f"Erro durante o teste: {e}")
+        print(f"❌ Erro no teste de folha: {e}")
+
+    # --- TESTE 2: Benchmark (O que está falhando no site) ---
+    print("\n🔍 Testando busca de Mercado (Benchmark) para G1:")
+    try:
+        resultado_mercado = dm.obter_benchmark('G1')
+        print(resultado_mercado)
+    except Exception as e:
+        print(f"❌ Erro no teste de benchmark: {e}")
