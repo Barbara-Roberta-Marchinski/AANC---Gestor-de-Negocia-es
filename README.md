@@ -77,5 +77,19 @@ Este projeto foi desenvolvido com foco em privacidade e conformidade:
 
 ## Observações
 
-- Os cálculos de custo aplicam encargos sociais apenas ao salário, enquanto VA e PLR são tratados como valores de benefício sem encargos diretos.
+- Os cálculos de custo aplicam provisões de férias e 13° e encargos sociais apenas ao salário, enquanto VA e PLR são tratados como valores de benefício sem encargos diretos.
 - Os custos mensais de salário e VA são convertidos para base anual para comparação homogênea com PLR.
+
+## Treinamento de Modelo de Turnover
+
+O projeto também inclui um script de machine learning para prever turnover com base no dataset público IBM HR Analytics.
+
+- Script: `ml/treinar_modelo.py`
+- Guia de uso: `ml/README.md`
+- Comando para executar:
+
+```bash
+python ml/treinar_modelo.py
+```
+
+O script treina um modelo de classificação, avalia métricas importantes e salva o pipeline treinado em `modelo_turnover.pkl`.
