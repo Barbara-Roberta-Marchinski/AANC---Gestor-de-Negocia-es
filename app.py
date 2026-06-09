@@ -149,7 +149,7 @@ else:
     st.sidebar.error("Sistema Offline")
 
 # Corpo principal por abas
-main_tab, turnover_tab = st.tabs(["Chat", "🔮 Previsão de Turnover"])
+main_tab, turnover_tab, simulador_macro_tab = st.tabs(["Chat", "🔮 Previsão de Turnover", "⚖️ Simulador de Negociação (Macro)"])
 
 with turnover_tab:
     st.header("🔮 Previsão de Turnover")
@@ -235,6 +235,121 @@ with turnover_tab:
                 st.dataframe(predict_df)
             except Exception as e:
                 st.error(f"Erro ao calcular o risco: {e}")
+
+with simulador_macro_tab:
+    st.header("⚖️ Simulador de Negociação (Macro)")
+    st.markdown("Simule o risco global de evasão de uma planta inteira com base em uma proposta de reajuste sindical.")
+
+    modelo_macro = None
+    template_macro = None
+    model_error_macro = None
+    template_error_macro = None
+
+    try:
+        modelo_macro = carregar_modelo_turnover()
+    except Exception as e:
+        model_error_macro = str(e)
+
+    try:
+        template_macro = carregar_template_turnover()
+    except Exception as e:
+        template_error_macro = str(e)
+
+    if model_error_macro:
+        st.error(f"Erro ao carregar modelo: {model_error_macro}")
+    elif template_error_macro:
+        st.error(f"Erro ao carregar template: {template_error_macro}")
+    elif template_macro is None or template_macro.empty:
+        st.error("Não foi possível carregar o template oculto para a simulação macro.")
+    else:
+        plantas_macro = {
+            "G1": {
+                "Salário Base": 6000,
+                "Idade Média": 35,
+                "BusinessTravel": "Travel_Rarely",
+                "Department": "Sales",
+                "Gender": "Female",
+                "JobRole": "Sales Executive",
+                "MaritalStatus": "Single",
+                "OverTime": "Yes",
+            },
+            "G2": {
+                "Salário Base": 7000,
+                "Idade Média": 45,
+                "BusinessTravel": "Travel_Frequently",
+                "Department": "Research & Development",
+                "Gender": "Male",
+                "JobRole": "Laboratory Technician",
+                "MaritalStatus": "Married",
+                "OverTime": "No",
+            },
+            "G3": {
+                "Salário Base": 8500,
+                "Idade Média": 50,
+                "BusinessTravel": "Non-Travel",
+                "Department": "Human Resources",
+                "Gender": "Female",
+                "JobRole": "Human Resources",
+                "MaritalStatus": "Divorced",
+                "OverTime": "No",
+            },
+        }
+
+        planta_macro = st.selectbox("Planta", list(plantas_macro.keys()), index=0)
+        reajuste_macro = st.slider("Reajuste Proposto (%)", 0.0, 15.0, 0.0, 0.5)
+
+        dados_macro = plantas_macro[planta_macro]
+        salario_base_macro = dados_macro["Salário Base"]
+        idade_media_macro = dados_macro["Idade Média"]
+        novo_salario_macro = salario_base_macro * (1 + reajuste_macro / 100)
+
+        predict_df_macro = template_macro.copy()
+        predict_df_macro.at[predict_df_macro.index[0], "Age"] = int(idade_media_macro)
+        predict_df_macro.at[predict_df_macro.index[0], "MonthlyIncome"] = int(round(novo_salario_macro))
+        predict_df_macro.at[predict_df_macro.index[0], "PercentSalaryHike"] = int(round(reajuste_macro))
+        predict_df_macro.at[predict_df_macro.index[0], "BusinessTravel"] = dados_macro["BusinessTravel"]
+        predict_df_macro.at[predict_df_macro.index[0], "Department"] = dados_macro["Department"]
+        predict_df_macro.at[predict_df_macro.index[0], "Gender"] = dados_macro["Gender"]
+        predict_df_macro.at[predict_df_macro.index[0], "JobRole"] = dados_macro["JobRole"]
+        predict_df_macro.at[predict_df_macro.index[0], "MaritalStatus"] = dados_macro["MaritalStatus"]
+        predict_df_macro.at[predict_df_macro.index[0], "OverTime"] = dados_macro["OverTime"]
+
+        if "Attrition" in predict_df_macro.columns:
+            predict_df_macro = predict_df_macro.drop(columns=["Attrition"])
+
+        try:
+            baseline_df = predict_df_macro.copy()
+            baseline_df.at[baseline_df.index[0], "MonthlyIncome"] = int(round(salario_base_macro))
+            baseline_df.at[baseline_df.index[0], "PercentSalaryHike"] = 0
+            if "Attrition" in baseline_df.columns:
+                baseline_df = baseline_df.drop(columns=["Attrition"])
+
+            probabilidades = modelo_macro.predict_proba(baseline_df)
+            risco_base = float(probabilidades[0][1]) * 100
+            fator_suavizacao = reajuste_macro / 2.0
+            risco_final = max(0.0, risco_base - fator_suavizacao)
+
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Reajuste Proposto", f"{reajuste_macro:.1f}%")
+            col2.metric("Novo Salário Médio", f"R$ {novo_salario_macro:,.0f}")
+            col3.metric("Risco de Greve/Evasão Projetado", f"{risco_final:.1f}%")
+
+            st.progress(min(1.0, risco_final / 100))
+
+            if risco_final > 40:
+                st.error("🚨 ALTO RISCO DE GREVE/EVASÃO")
+            elif risco_final > 20:
+                st.warning("⚠️ RISCO MODERADO (Tensão na Base)")
+            else:
+                st.success("✅ MARGEM SEGURA (Estabilidade)")
+
+            st.markdown("### Detalhes da simulação")
+            st.write(f"- Planta simulada: **{planta_macro}**")
+            st.write(f"- Salário Base atual: **R$ {salario_base_macro:,.0f}**")
+            st.write(f"- Idade Média usada: **{idade_media_macro} anos**")
+            st.write(f"- Novo Salário Médio projetado: **R$ {novo_salario_macro:,.0f}**")
+        except Exception as e:
+            st.error(f"Erro ao calcular o risco macro: {e}")
 
 with main_tab:
     st.title("🤖 AANC - Gestor de Negociações Indústria-X")
