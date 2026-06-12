@@ -69,6 +69,12 @@ env_aanc\Scripts\activate.bat # Windows PowerShell
 pip install duckdb pandas streamlit txtai PyPDF2 python-dotenv google-genai
 ```
 
+- Para execução de testes de auditoria, instale também `deepeval`:
+
+```bash
+pip install deepeval
+```
+
 3. Crie o arquivo `.env` na raiz do projeto e adicione a chave da API:
 
 ```text
@@ -88,7 +94,19 @@ Este projeto foi desenvolvido com foco em privacidade e conformidade:
 - mantém chaves de API fora do controle de versão via `.env` e `.gitignore`.
 - foi pensado para ser compatível com **modelos locais** e ambientes fechados, reduzindo o risco de exposição de dados sensíveis.
 - a lógica de consulta e simulação trabalha com dados estruturados e não depende de armazenamento persistente de informações pessoais.
+## Observabilidade e Testes
 
+- `app.py` possui instrumentação Langfuse para capturar spans de chat e simulações macro usando `start_as_current_observation()`.
+- `src/agentes_negociacao.py` inclui callbacks de Langfuse nos passos da CrewAI para rastrear a execução do agente de negociação.
+- `test_auditoria_agentes.py` é uma suíte de auditoria que valida a qualidade das respostas com DeepEval, usando um adaptador local para testes offline quando possível.
+- Para executar os testes:
+
+```bash
+pip install deepeval
+python -m pytest -q test_auditoria_agentes.py
+```
+
+Se `deepeval` não estiver instalado, o teste será ignorado automaticamente.
 ## Observações
 
 - Os cálculos de custo aplicam provisões de férias e 13° e encargos sociais apenas ao salário, enquanto VA e PLR são tratados como valores de benefício sem encargos diretos.
