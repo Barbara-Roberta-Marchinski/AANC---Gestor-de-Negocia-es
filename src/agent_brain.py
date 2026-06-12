@@ -1,12 +1,14 @@
 """Módulo que orquestra o agente de negociação integrando SQL determinístico, RAG e geração de linguagem."""
 
 import os
+import joblib
+import pandas as pd
 from dotenv import load_dotenv
 try:
-    from database_manager import DatabaseManager
+    from database_manager import DataManager
     from rag_engine import DocumentAssistant
 except ImportError:
-    from src.database_manager import DatabaseManager
+    from src.database_manager import DataManager
     from src.rag_engine import DocumentAssistant
 
 from google import genai
@@ -15,19 +17,19 @@ load_dotenv()
 
 class AANC_Agent:
     """
-    Classe orquestradora que integra o DatabaseManager (SQL) e DocumentAssistant (RAG).
+    Classe orquestradora que integra o DataManager (SQL) e DocumentAssistant (RAG).
     Utiliza Gemini para classificar a intenção da pergunta e rotear para o módulo apropriado.
     """
 
     def __init__(self):
         """
-        Inicializa o agente com DatabaseManager, DocumentAssistant e Gemini.
+        Inicializa o agente com DataManager, DocumentAssistant e Gemini.
         """
         try:
-            # Inicializar DatabaseManager
-            self.dm = DatabaseManager()
-            self.dm.inicializar_tabelas_limpas()
-            print("DatabaseManager inicializado com sucesso.")
+            # Inicializar DataManager
+            self.dm = DataManager()
+            self.dm.inicializar_tabelas()
+            print("DataManager inicializado com sucesso.")
 
             # Inicializar DocumentAssistant
             self.da = DocumentAssistant()
@@ -151,6 +153,9 @@ Responda apenas com um JSON válido no formato:
                     intencao = 'CONSULTA_ESTRATEGICA'
                 else:
                     intencao = 'POLÍTICA'
+
+            if self._detectar_risco_ml(pergunta):
+                return self._processar_risco_evasao_ml(pergunta, planta_id)
 
             if intencao == 'CÁLCULO':
                 return self._processar_calculo(pergunta, planta_id)
@@ -346,6 +351,112 @@ Responda em português, focando nos impactos principais."""
                 "tipo": "CÁLCULO_FINANCEIRO",
                 "contexto": planta_id,
                 "resposta": f"Não consegui processar a simulação financeira. Verifique se os percentuais estão corretos. Erro: {str(e)}"
+            }
+
+    def _detectar_risco_ml(self, pergunta):
+        """Detecta consultas de risco, evasão ou turnover que devem usar o modelo ML."""
+        texto = pergunta.lower()
+        termos = ['risco', 'evasão', 'evasao', 'turnover', 'desligamento', 'rotatividade', 'greve']
+        return any(termo in texto for termo in termos)
+
+    def _get_plant_risco_template(self, planta_id):
+        """Retorna características de planta para alinhar o chat ao simulador macro."""
+        plantas = {
+            'G1': {
+                'Salário Base': 6000,
+                'Age': 35,
+                'BusinessTravel': 'Travel_Rarely',
+                'Department': 'Sales',
+                'Gender': 'Female',
+                'JobRole': 'Sales Executive',
+                'MaritalStatus': 'Single',
+                'OverTime': 'Yes',
+            },
+            'G2': {
+                'Salário Base': 7000,
+                'Age': 45,
+                'BusinessTravel': 'Travel_Frequently',
+                'Department': 'Research & Development',
+                'Gender': 'Male',
+                'JobRole': 'Laboratory Technician',
+                'MaritalStatus': 'Married',
+                'OverTime': 'No',
+            },
+            'G3': {
+                'Salário Base': 8500,
+                'Age': 50,
+                'BusinessTravel': 'Non-Travel',
+                'Department': 'Human Resources',
+                'Gender': 'Female',
+                'JobRole': 'Human Resources',
+                'MaritalStatus': 'Divorced',
+                'OverTime': 'No',
+            }
+        }
+        return plantas.get(planta_id, {
+            'Salário Base': 5290.0,
+            'Age': 35,
+            'BusinessTravel': 'Travel_Rarely',
+            'Department': 'Research & Development',
+            'Gender': 'Female',
+            'JobRole': 'Research Scientist',
+            'MaritalStatus': 'Single',
+            'OverTime': 'No',
+        })
+
+    def _processar_risco_evasao_ml(self, pergunta, planta_id):
+        """Processa perguntas de risco usando o modelo de ML de turnover."""
+        try:
+            variaveis = self._extrair_variaveis_simulacao(pergunta)
+            reajuste_proposto = float(variaveis.get('pct_salario', 0.0) or 0.0)
+
+            modelo = joblib.load('ml/modelo_turnover.pkl')
+            template = pd.read_csv('data/ibm_attrition.csv', nrows=1).copy()
+            if 'Attrition' in template.columns:
+                template = template.drop(columns=['Attrition'])
+
+            planta_info = self._get_plant_risco_template(planta_id)
+            salario_base = float(planta_info['Salário Base'])
+
+            template_base = template.copy()
+            template_base['MonthlyIncome'] = int(round(salario_base))
+            template_base['Age'] = int(planta_info['Age'])
+            for feature in ['BusinessTravel', 'Department', 'Gender', 'JobRole', 'MaritalStatus', 'OverTime']:
+                if feature in template_base.columns:
+                    template_base[feature] = planta_info[feature]
+            if 'PercentSalaryHike' in template_base.columns:
+                template_base['PercentSalaryHike'] = 0.0
+
+            risco_base = float(modelo.predict_proba(template_base)[0][1])
+
+            novo_salario = salario_base * (1 + reajuste_proposto / 100.0)
+            template_ajustado = template_base.copy()
+            template_ajustado['MonthlyIncome'] = int(round(novo_salario))
+            if 'PercentSalaryHike' in template_ajustado.columns:
+                template_ajustado['PercentSalaryHike'] = reajuste_proposto
+
+            risco_ajustado = float(modelo.predict_proba(template_ajustado)[0][1])
+            risco_final = risco_ajustado
+
+            resposta = (
+                f"O modelo preditivo de ML calculou que, com um reajuste de {reajuste_proposto:.1f}% na planta {planta_id}, "
+                f"o risco global de evasão deve passar de {risco_base * 100:.2f}% para {risco_final * 100:.2f}%."
+            )
+
+            return {
+                "tipo": "RISCO_ML",
+                "contexto": planta_id,
+                "variaveis_extraidas": variaveis,
+                "risco_base": risco_base,
+                "risco_ajustado": risco_ajustado,
+                "risco_final": risco_final,
+                "resposta": resposta
+            }
+        except Exception as e:
+            return {
+                "tipo": "RISCO_ML",
+                "contexto": planta_id,
+                "resposta": f"Não foi possível calcular o risco com o modelo ML. Verifique se o arquivo ml/modelo_turnover.pkl e o template data/ibm_attrition.csv estão disponíveis. Erro: {str(e)}"
             }
 
     def _processar_benchmark(self, pergunta, planta_id):

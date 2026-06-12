@@ -1,9 +1,13 @@
 """Aplicação Streamlit do AANC para simulação financeira, chat de dúvidas e filtro por planta."""
 
+import os
 import re
 import joblib
 import streamlit as st
 import pandas as pd
+from contextlib import nullcontext
+from dotenv import load_dotenv
+from langfuse import get_client
 from src.agent_brain import AANC_Agent
 
 # Configuração da página
@@ -12,6 +16,15 @@ st.set_page_config(
     page_icon='🤖',
     layout='wide'
 )
+
+# Carrega variáveis de ambiente para Langfuse
+load_dotenv()
+
+# Inicializa cliente Langfuse para observabilidade, sem quebrar o app se não estiver configurado.
+try:
+    langfuse_client = get_client()
+except Exception:
+    langfuse_client = None
 
 # Inicializar agente (uma vez por sessão)
 if 'agent' not in st.session_state:
@@ -85,13 +98,35 @@ if st.sidebar.button("Executar Simulação", type="primary"):
                 if not hasattr(st.session_state.agent, 'dm') or not hasattr(st.session_state.agent.dm, 'simular_cenario_completo'):
                     raise Exception('O agente atual não possui o método de simulação completo. Reinicie o app para recarregá-lo.')
 
-                resultado = st.session_state.agent.dm.simular_cenario_completo(
-                    planta_id=planta_id,
-                    pct_salario=pct_salario,
-                    pct_va=pct_va,
-                    pct_plr=pct_plr,
-                    pct_he_adicional=0.0
-                )
+                trace_ctx = nullcontext()
+                if langfuse_client is not None:
+                    trace_ctx = langfuse_client.start_as_current_observation(
+                        as_type="span",
+                        name="aanc.macro_simulation",
+                        input=f"planta={planta_id},pct_salario={pct_salario},pct_va={pct_va},pct_plr={pct_plr}",
+                        metadata={
+                            "planta_id": planta_id,
+                            "pct_salario": pct_salario,
+                            "pct_va": pct_va,
+                            "pct_plr": pct_plr,
+                        },
+                    )
+
+                with trace_ctx as span:
+                    resultado = st.session_state.agent.dm.simular_cenario_completo(
+                        planta_id=planta_id,
+                        pct_salario=pct_salario,
+                        pct_va=pct_va,
+                        pct_plr=pct_plr,
+                        pct_he_adicional=0.0
+                    )
+                    if span is not None:
+                        span.update(
+                            output={
+                                "status": "success",
+                                "simulacao_resultado": resultado,
+                            }
+                        )
                 st.session_state.simulacao_resultado = resultado
                 st.rerun()
             except Exception as e:
@@ -314,31 +349,43 @@ with simulador_macro_tab:
         predict_df_macro.at[predict_df_macro.index[0], "MaritalStatus"] = dados_macro["MaritalStatus"]
         predict_df_macro.at[predict_df_macro.index[0], "OverTime"] = dados_macro["OverTime"]
 
-        if "Attrition" in predict_df_macro.columns:
-            predict_df_macro = predict_df_macro.drop(columns=["Attrition"])
+        if "MonthlyRate" in predict_df_macro.columns:
+            predict_df_macro.at[predict_df_macro.index[0], "MonthlyRate"] = int(round(predict_df_macro.at[predict_df_macro.index[0], "MonthlyRate"] * (1 + reajuste_macro / 100)))
 
         try:
-            baseline_df = predict_df_macro.copy()
-            baseline_df.at[baseline_df.index[0], "MonthlyIncome"] = int(round(salario_base_macro))
-            baseline_df.at[baseline_df.index[0], "PercentSalaryHike"] = 0
-            if "Attrition" in baseline_df.columns:
-                baseline_df = baseline_df.drop(columns=["Attrition"])
+            predict_df_base = template_macro.copy()
+            predict_df_base.at[predict_df_base.index[0], "Age"] = int(idade_media_macro)
+            predict_df_base.at[predict_df_base.index[0], "MonthlyIncome"] = int(round(salario_base_macro))
+            predict_df_base.at[predict_df_base.index[0], "PercentSalaryHike"] = 0
+            for feature in ["BusinessTravel", "Department", "Gender", "JobRole", "MaritalStatus", "OverTime"]:
+                if feature in predict_df_base.columns:
+                    predict_df_base.at[predict_df_base.index[0], feature] = dados_macro[feature]
 
-            probabilidades = modelo_macro.predict_proba(baseline_df)
-            risco_base = float(probabilidades[0][1]) * 100
-            fator_suavizacao = reajuste_macro / 2.0
-            risco_final = max(0.0, risco_base - fator_suavizacao)
+            if "MonthlyRate" in predict_df_base.columns:
+                predict_df_base.at[predict_df_base.index[0], "MonthlyRate"] = int(round(predict_df_base.at[predict_df_base.index[0], "MonthlyRate"]))
+
+            risco_base = float(modelo_macro.predict_proba(predict_df_base)[0][1]) * 100
+            risco_ajustado = float(modelo_macro.predict_proba(predict_df_macro)[0][1]) * 100
+            fallback_applied = False
+
+            if reajuste_macro > 0 and abs(risco_ajustado - risco_base) < 0.01:
+                ajuste_heuristico = min(risco_base, reajuste_macro * 0.003)
+                risco_ajustado = max(0.0, risco_base - ajuste_heuristico)
+                fallback_applied = True
 
             col1, col2, col3 = st.columns(3)
             col1.metric("Reajuste Proposto", f"{reajuste_macro:.1f}%")
             col2.metric("Novo Salário Médio", f"R$ {novo_salario_macro:,.0f}")
-            col3.metric("Risco de Greve/Evasão Projetado", f"{risco_final:.1f}%")
+            col3.metric("Risco de Greve/Evasão Projetado", f"{risco_ajustado:.1f}%")
 
-            st.progress(min(1.0, risco_final / 100))
+            if fallback_applied:
+                st.info("O modelo ML apresentou pouca variação nesse intervalo. Foi aplicado um ajuste heurístico para refletir o impacto do reajuste salarial.")
 
-            if risco_final > 40:
+            st.progress(min(1.0, risco_ajustado / 100))
+
+            if risco_ajustado > 40:
                 st.error("🚨 ALTO RISCO DE GREVE/EVASÃO")
-            elif risco_final > 20:
+            elif risco_ajustado > 20:
                 st.warning("⚠️ RISCO MODERADO (Tensão na Base)")
             else:
                 st.success("✅ MARGEM SEGURA (Estabilidade)")
@@ -348,6 +395,8 @@ with simulador_macro_tab:
             st.write(f"- Salário Base atual: **R$ {salario_base_macro:,.0f}**")
             st.write(f"- Idade Média usada: **{idade_media_macro} anos**")
             st.write(f"- Novo Salário Médio projetado: **R$ {novo_salario_macro:,.0f}**")
+            st.write(f"- Risco base ML: **{risco_base:.1f}%**")
+            st.write(f"- Risco ajustado ML: **{risco_ajustado:.1f}%**")
         except Exception as e:
             st.error(f"Erro ao calcular o risco macro: {e}")
 
@@ -377,19 +426,32 @@ with main_tab:
 
             contexto_planta = planta_override or planta_id
 
-            # Adicionar mensagem do usuário
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            with st.chat_message("user"):
-                st.markdown(prompt)
+            trace_ctx = nullcontext()
+            if langfuse_client is not None:
+                trace_ctx = langfuse_client.start_as_current_observation(
+                    as_type="span",
+                    name="aanc.chat_input",
+                    input=prompt,
+                    metadata={
+                        "planta_id": contexto_planta,
+                        "tab": "chat",
+                    },
+                )
 
-            if planta_override:
-                st.info(f"Contexto de planta definido por sinônimo: {planta_override}")
+            with trace_ctx as span:
+                # Adicionar mensagem do usuário
+                st.session_state.messages.append({"role": "user", "content": prompt})
+                with st.chat_message("user"):
+                    st.markdown(prompt)
 
-            # Processar pergunta
-            with st.chat_message("assistant"):
-                with st.spinner("Processando sua pergunta..."):
+                if planta_override:
+                    st.info(f"Contexto de planta definido por sinônimo: {planta_override}")
+
+                # Processar pergunta
+                with st.chat_message("assistant"):
                     try:
-                        resultado = st.session_state.agent.processar_pergunta(prompt, contexto_planta)
+                        with st.spinner("Processando sua pergunta..."):
+                            resultado = st.session_state.agent.processar_pergunta(prompt, contexto_planta)
 
                         # Verificar indicador de risco
                         resposta_texto = resultado.get('resposta', '').lower()
@@ -473,6 +535,9 @@ with main_tab:
                         st.markdown(resultado.get('resposta', 'Nenhuma resposta gerada.'))
 
                         # Exibição específica para CÁLCULO_FINANCEIRO
+                        if resultado.get('tipo') == 'RISCO_ML' and 'risco_final' in resultado:
+                            st.metric("Risco Global de Evasão", f"{resultado['risco_final'] * 100:.2f}%")
+
                         if resultado.get('tipo') == 'CÁLCULO_FINANCEIRO' and 'resultado_simulacao' in resultado:
                             sim = resultado['resultado_simulacao']
                             custo_atual = sim['Custo Atual']
@@ -498,6 +563,14 @@ with main_tab:
                             "contexto": resultado.get('contexto', 'N/A')
                         })
 
+                        if span is not None:
+                            span.update(
+                                output=resultado.get('resposta', resultado),
+                                metadata={
+                                    "tipo": resultado.get('tipo', 'N/A'),
+                                    "contexto": resultado.get('contexto', 'N/A'),
+                                },
+                            )
                     except Exception as e:
                         error_msg = "Sistema em manutenção temporária. Por favor, tente em instantes."
                         st.error(error_msg)

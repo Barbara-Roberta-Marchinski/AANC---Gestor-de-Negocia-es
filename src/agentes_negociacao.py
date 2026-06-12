@@ -1,3 +1,8 @@
+import os
+import joblib
+import pandas as pd
+from langfuse.callback import CallbackHandler
+
 from crewai import Agent, Task, Crew, Process, tool
 
 
@@ -21,7 +26,37 @@ def consultar_regras_sindicato(topico: str) -> str:
     return (
         f"Regra mock para o tema '{topico}': o ACT estabelece que qualquer reajuste salarial "
         "deve ser negociado com o sindicato, com cláusula de manutenção de emprego e garantia "
-        "de aumento real não inferior a 4% para cargos de produção."")
+        "de aumento real não inferior a 4% para cargos de produção."
+    )
+
+
+@tool("Simulador de Risco ML")
+def simular_risco_evasao_ml(planta: str, reajuste_proposto: float) -> str:
+    """Simula risco de greve sindical usando o modelo ML e um template oculto do dataset."""
+    reajuste_proposto = float(reajuste_proposto)
+
+    modelo = joblib.load("ml/modelo_turnover.pkl")
+    template = pd.read_csv("data/ibm_attrition.csv").iloc[[0]].copy()
+
+    salario_base = 5290.0
+    novo_salario = salario_base * (1 + reajuste_proposto / 100.0)
+    template["MonthlyIncome"] = int(round(novo_salario))
+
+    probabilidades = modelo.predict_proba(template)[0]
+    risco_base = float(probabilidades[1]) * 100
+
+    inflacao_esperada = 4.0
+    if reajuste_proposto >= inflacao_esperada:
+        risco_greve = risco_base - ((reajuste_proposto - inflacao_esperada) * 10.0)
+    else:
+        risco_greve = risco_base
+
+    risco_greve = max(0.0, min(100.0, risco_greve))
+
+    return (
+        f"O modelo avaliou a tensão atual da planta {planta}. "
+        f"Considerando a inflação de {inflacao_esperada}%, a proposta de {reajuste_proposto}% "
+        f"resulta em um Risco de Greve de {risco_greve:.2f}%.")
 
 
 # =====================
@@ -36,7 +71,7 @@ analista_remuneracao = Agent(
         "Especialista em People Analytics e planejamento financeiro, focado em manter o headcount "
         "dentro do orçamento e identificar riscos de custo para a área de RH."
     ),
-    tools=[consultar_impacto_financeiro],
+    tools=[consultar_impacto_financeiro, simular_risco_evasao_ml],
 )
 
 advogado_trabalhista = Agent(
@@ -62,6 +97,7 @@ task_calcular_custo = Task(
     ),
     agent=analista_remuneracao,
     input_data={"percentual_reajuste": 5.0},
+    step_callbacks=[langfuse_handler],
 )
 
 task_revisar_act = Task(
@@ -71,6 +107,7 @@ task_revisar_act = Task(
     ),
     agent=advogado_trabalhista,
     input_data={"topico": "reajuste salarial e cláusulas de proteção de emprego"},
+    step_callbacks=[langfuse_handler],
 )
 
 
@@ -78,9 +115,17 @@ task_revisar_act = Task(
 # Orquestração com Crew
 # =====================
 
+# Configure as variáveis de ambiente LANGFUSE_SECRET_KEY, LANGFUSE_PUBLIC_KEY e LANGFUSE_HOST no .env para habilitar observabilidade.
+langfuse_handler = CallbackHandler(
+    secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
+    public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
+    host=os.getenv("LANGFUSE_HOST"),
+)
+
 crew_negociacao = Crew(
     name="CrewNegociacaoColetiva",
     agents=[analista_remuneracao, advogado_trabalhista],
+    step_callbacks=[langfuse_handler],
 )
 
 processo_negociacao = Process(

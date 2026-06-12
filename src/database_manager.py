@@ -36,6 +36,37 @@ class DataManager:
         except Exception as e:
             raise Exception(f"Erro ao inicializar tabelas: {str(e)}. Verifique os arquivos CSV e tente novamente.")
 
+    def inicializar_tabelas_limpas(self):
+        """Inicializa as tabelas limpando as tabelas existentes antes da criação."""
+        try:
+            self.conn.execute("DROP TABLE IF EXISTS headcount")
+            self.conn.execute("DROP TABLE IF EXISTS premissas")
+            self.conn.execute("DROP TABLE IF EXISTS referencias_sindicais")
+            self.conn.execute("DROP TABLE IF EXISTS benchmark_mercado")
+            self.inicializar_tabelas()
+        except Exception as e:
+            raise Exception(f"Erro ao inicializar tabelas limpas: {str(e)}")
+
+    def get_mapa_sinonimos(self):
+        """Retorna um mapeamento de sinônimos de plantas a partir do CSV de mapeamento."""
+        try:
+            df = pd.read_csv('data/mapeamento_sinonimos.csv', sep=';', encoding='utf-8')
+            if 'Planta' in df.columns and 'Sinonimos' in df.columns:
+                mapa = {}
+                for _, row in df.iterrows():
+                    planta = str(row['Planta']).strip()
+                    sinonimos = str(row['Sinonimos']).split(',') if pd.notna(row['Sinonimos']) else []
+                    for sinonimo in sinonimos:
+                        chave = sinonimo.strip()
+                        if chave:
+                            mapa[chave] = planta
+                return mapa
+            return {}
+        except FileNotFoundError:
+            return {}
+        except Exception as e:
+            raise Exception(f"Erro ao carregar mapa de sinônimos: {str(e)}")
+
     def executar_consulta(self, sql_query):
         try:
             result = self.conn.execute(sql_query)
@@ -139,6 +170,7 @@ class DataManager:
                     'Custo VA Atual Anual': round(va_atual_anual, 2),
                     'Custo VA Projetado Anual': round(va_projetado_anual, 2),
                     'Custo PLR Atual Anual': round(plr_atual_anual, 2),
+                    'Custo PLR Projetado Anual': round(plr_projetado_anual, 2),
                     'Salário Base Atual': round(df['salario_atual'].sum(), 2),
                     'HE Atual': round((df['salario_atual'] * df['perc_he_medio'] * 1.2).sum(), 2),
                     'DSR Atual': 0.0,
