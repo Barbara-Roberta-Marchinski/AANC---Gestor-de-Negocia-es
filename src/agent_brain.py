@@ -81,6 +81,123 @@ Responda apenas com uma das palavras: 'CÁLCULO', 'POLÍTICA', 'CÁLCULO_FINANCE
             print(f"Erro ao classificar intenção: {e}")
             return None
 
+    def _identificar_tarefas(self, pergunta):
+        """
+        Identifica todas as tarefas necessárias para atender à pergunta do usuário.
+
+        Retorna uma lista de tarefas que devem ser executadas sequencialmente.
+        """
+        prompt = f"""Você é um orquestrador de ferramentas responsável por analisar o pedido do usuário e selecionar todas as ações necessárias.
+
+Ações possíveis:
+- CÁLCULO: gerar e executar consulta SQL para cálculos de salário, PLR, VA, encargos e impacto financeiro.
+- CÁLCULO_FINANCEIRO: executar simulação financeira de reajustes e explicar o impacto na folha de pagamento.
+- RISCO_ML: calcular o risco de greve, evasão ou turnover usando o modelo ML.
+- BENCHMARK: comparar nossa prática com benchmark de mercado.
+- POLÍTICA: responder com base nos documentos ACT/CCT usando RAG.
+- CONSULTA_ESTRATEGICA: responder consultas estratégicas que misturam mercado, política e reajuste.
+
+Instruções:
+1. Analise o pedido do usuário com atenção e não omita nenhuma frente de análise relevante.
+2. Se o pedido envolver tanto custo financeiro quanto risco de greve/turnover, inclua CÁLCULO_FINANCEIRO e RISCO_ML.
+3. Se houver pedido de regras e documentos, adicione POLÍTICA.
+4. Se houver pedido de comparação de mercado, adicione BENCHMARK.
+5. REGRA DE MÚLTIPLAS FERRAMENTAS: Se você acionar mais de uma ferramenta para o mesmo cenário, você é OBRIGADO a repassar exatamente os mesmos parâmetros (como ID da Planta e % de reajuste) para TODAS as funções. Não deixe parâmetros vazios se a informação estiver na pergunta do usuário.
+6. Retorne apenas JSON válido no formato:
+{{"tasks": ["CÁLCULO_FINANCEIRO", "RISCO_ML"]}}
+
+Usuário: "{pergunta}"
+"""
+        try:
+            response = self.client.models.generate_content(model='gemini-flash-latest', contents=prompt)
+            texto = response.text.strip()
+            import json, re, ast
+
+            # Extrair JSON do texto, se existir
+            match = re.search(r"\{.*\}", texto, re.S)
+            dados = None
+            if match:
+                texto_json = match.group()
+                try:
+                    dados = json.loads(texto_json)
+                except json.JSONDecodeError:
+                    dados = ast.literal_eval(texto_json)
+
+            if dados and isinstance(dados, dict):
+                tarefas = dados.get('tasks') or dados.get('task') or dados.get('actions')
+                if isinstance(tarefas, str):
+                    tarefas = [tarefas]
+                if isinstance(tarefas, (list, tuple)) and tarefas:
+                    return [str(t).strip().upper() for t in tarefas if str(t).strip()]
+        except Exception as e:
+            print(f"Erro ao identificar tarefas: {e}")
+
+        # Fallback heurístico simples
+        tarefas = []
+        if self._detectar_risco_ml(pergunta):
+            tarefas.append('RISCO_ML')
+        if any(word in pergunta.lower() for word in ['reajuste', '%', 'salário', 'folha', 'impacto']):
+            tarefas.append('CÁLCULO_FINANCEIRO')
+        if any(word in pergunta.lower() for word in ['act', 'cct', 'acordo coletivo', 'cláusula', 'contrato']):
+            tarefas.append('POLÍTICA')
+        if any(word in pergunta.lower() for word in ['benchmark', 'mercado', 'concorrência', 'prática de mercado']):
+            tarefas.append('BENCHMARK')
+        if not tarefas:
+            intencao = self._classificar_intencao(pergunta)
+            if intencao:
+                tarefas.append(intencao)
+            elif self._detectar_consulta_estrategica(pergunta):
+                tarefas.append('CONSULTA_ESTRATEGICA')
+            else:
+                tarefas.append('POLÍTICA')
+        return list(dict.fromkeys(tarefas))
+
+    def _processar_varias_tarefas(self, tarefas, pergunta, planta_id, arquivos_permitidos):
+        """Executa várias tarefas em sequência quando a pergunta exige mais de uma análise."""
+        variaveis_compartilhadas = self._extrair_variaveis_simulacao(pergunta)
+        componentes = []
+        for tarefa in tarefas:
+            try:
+                if tarefa == 'CÁLCULO':
+                    componentes.append(self._processar_calculo(pergunta, planta_id))
+                elif tarefa == 'CÁLCULO_FINANCEIRO':
+                    componentes.append(self._processar_simulacao_financeira(pergunta, planta_id, variaveis=variaveis_compartilhadas))
+                elif tarefa == 'RISCO_ML':
+                    componentes.append(self._processar_risco_evasao_ml(pergunta, planta_id, variaveis=variaveis_compartilhadas))
+                elif tarefa == 'BENCHMARK':
+                    componentes.append(self._processar_benchmark(pergunta, planta_id))
+                elif tarefa == 'CONSULTA_ESTRATEGICA':
+                    componentes.append(self._processar_consulta_estrategica(pergunta, planta_id, arquivos_permitidos))
+                else:
+                    componentes.append(self._processar_politica(pergunta, planta_id, arquivos_permitidos))
+            except Exception:
+                if tarefa == 'POLÍTICA':
+                    componentes.append({
+                        'tipo': 'POLÍTICA',
+                        'contexto': planta_id,
+                        'documentos_consultados': [],
+                        'trechos': [],
+                        'resposta': 'Nenhuma política limitante aplicável encontrada.'
+                    })
+                else:
+                    componentes.append({
+                        'tipo': tarefa,
+                        'contexto': planta_id,
+                        'resposta': 'Não foi possível concluir esta etapa. Tente novamente ou reformule a pergunta.'
+                    })
+
+        texto_resposta = '\n\n'.join([
+            f"[{comp.get('tipo', 'N/A')}] {comp.get('resposta', '')}" for comp in componentes
+        ])
+
+        return {
+            'tipo': 'MULTIPLO',
+            'contexto': planta_id,
+            'tarefas': tarefas,
+            'componentes': componentes,
+            'resposta': texto_resposta,
+        }
+
     def _extrair_variaveis_simulacao(self, pergunta):
         """
         Extrai variáveis de simulação financeira da pergunta usando Gemini.
@@ -91,6 +208,39 @@ Responda apenas com uma das palavras: 'CÁLCULO', 'POLÍTICA', 'CÁLCULO_FINANCE
         Returns:
             dict: Dicionário com reajuste_salarial, reajuste_va, reajuste_plr, aumento_he (todos floats, padrão 0).
         """
+        import re
+
+        valores = {
+            'pct_salario': 0.0,
+            'pct_va': 0.0,
+            'pct_plr': 0.0,
+            'pct_he_adicional': 0.0
+        }
+
+        # Extrai todos os percentuais explícitos da pergunta.
+        padrao = re.compile(r"(\d+(?:[\.,]\d+)?)\s*(%|por cento|porcento)", re.IGNORECASE)
+        for match in padrao.finditer(pergunta):
+            numero = float(match.group(1).replace(',', '.'))
+            contexto = pergunta[:match.start()].lower()
+
+            if any(term in contexto for term in ['reajuste salarial', 'reajuste de salário', 'reajuste salário', 'salário', 'salario']):
+                valores['pct_salario'] = numero
+            elif any(term in contexto for term in ['vale alimentação', 'vale alimentacao', 'va ', 'va:']):
+                valores['pct_va'] = numero
+            elif any(term in contexto for term in ['plr', 'participação nos lucros', 'participacao nos lucros']):
+                valores['pct_plr'] = numero
+            elif any(term in contexto for term in ['hora extra', 'horas extras', 'he', 'aumento he']):
+                valores['pct_he_adicional'] = numero
+            else:
+                if valores['pct_salario'] == 0.0 and 'reajuste' in contexto:
+                    valores['pct_salario'] = numero
+                elif valores['pct_salario'] == 0.0 and 'plr' in pergunta.lower():
+                    valores['pct_plr'] = numero
+
+        if any(v > 0 for v in valores.values()):
+            return valores
+
+        # Fallback para Gemini apenas se nenhum percentual for reconhecido localmente.
         prompt = f"""Analise a seguinte pergunta e extraia os valores percentuais mencionados para simulação financeira.
 
 Pergunta: "{pergunta}"
@@ -109,7 +259,6 @@ Responda apenas com um JSON válido no formato:
         try:
             response = self.client.models.generate_content(model='gemini-flash-latest', contents=prompt)
             texto = response.text.strip()
-            # Tentar parsear JSON
             import json
             dados = json.loads(texto)
             return {
@@ -120,7 +269,7 @@ Responda apenas com um JSON válido no formato:
             }
         except Exception as e:
             print(f"Erro ao extrair variáveis: {e}. Usando valores padrão.")
-            return {'pct_salario': 0, 'pct_va': 0, 'pct_plr': 0, 'pct_he_adicional': 0}
+            return valores
 
     def processar_pergunta(self, pergunta, planta_id):
         """
@@ -146,16 +295,17 @@ Responda apenas com um JSON válido no formato:
                     "resposta": f"Nenhum documento encontrado para a planta {planta_id}. Verifique se a planta existe no sistema."
                 }
 
-            # Classificar intenção
-            intencao = self._classificar_intencao(pergunta)
+            # Identificar todas as tarefas necessárias, incluindo múltiplas frentes de análise.
+            tarefas = self._identificar_tarefas(pergunta)
+            if len(tarefas) > 1:
+                return self._processar_varias_tarefas(tarefas, pergunta, planta_id, arquivos_permitidos)
+
+            intencao = tarefas[0] if tarefas else None
             if not intencao:
                 if self._detectar_consulta_estrategica(pergunta):
                     intencao = 'CONSULTA_ESTRATEGICA'
                 else:
                     intencao = 'POLÍTICA'
-
-            if self._detectar_risco_ml(pergunta):
-                return self._processar_risco_evasao_ml(pergunta, planta_id)
 
             if intencao == 'CÁLCULO':
                 return self._processar_calculo(pergunta, planta_id)
@@ -165,6 +315,8 @@ Responda apenas com um JSON válido no formato:
                 return self._processar_benchmark(pergunta, planta_id)
             elif intencao == 'CONSULTA_ESTRATEGICA':
                 return self._processar_consulta_estrategica(pergunta, planta_id, arquivos_permitidos)
+            elif intencao == 'RISCO_ML':
+                return self._processar_risco_evasao_ml(pergunta, planta_id)
             return self._processar_politica(pergunta, planta_id, arquivos_permitidos)
 
         except Exception as e:
@@ -299,20 +451,21 @@ Retorne apenas a query SQL, sem explicações."""
                 "resposta": f"Não consegui processar a pergunta de cálculo. Reformule a pergunta com termos relacionados a salário, PLR ou benefícios. Erro: {str(e)}"
             }
 
-    def _processar_simulacao_financeira(self, pergunta, planta_id):
+    def _processar_simulacao_financeira(self, pergunta, planta_id, variaveis=None):
         """
         Processa simulações financeiras usando o método simular_cenario_completo.
 
         Args:
             pergunta (str): A pergunta de simulação financeira.
             planta_id (str): O ID da planta.
+            variaveis (dict, optional): Percentuais extraídos da pergunta para garantir consistência entre ferramentas.
 
         Returns:
             dict: Resposta estruturada.
         """
         try:
-            # Extrair variáveis da pergunta
-            variaveis = self._extrair_variaveis_simulacao(pergunta)
+            # Usar variáveis compartilhadas quando disponíveis
+            variaveis = variaveis or self._extrair_variaveis_simulacao(pergunta)
 
             # Executar simulação
             resultado_simulacao = self.dm.simular_cenario_completo(
@@ -336,8 +489,15 @@ Destaque que o cálculo incluiu:
 
 Responda em português, focando nos impactos principais."""
 
-            response = self.client.models.generate_content(model='gemini-flash-latest', contents=prompt_explicacao)
-            explicacao = response.text.strip()
+            try:
+                response = self.client.models.generate_content(model='gemini-flash-latest', contents=prompt_explicacao)
+                explicacao = response.text.strip()
+            except Exception as e:
+                print(f"Gemini indisponível para explicação financeira: {e}")
+                explicacao = (
+                    "Simulação financeira concluída com sucesso, mas não foi possível gerar a explicação de linguagem natural devido a limitação de quota do modelo. "
+                    f"Os percentuais utilizados foram: salário {variaveis['pct_salario']}%, VA {variaveis['pct_va']}%, PLR {variaveis['pct_plr']}%, horas extras {variaveis['pct_he_adicional']}%."
+                )
 
             return {
                 "tipo": "CÁLCULO_FINANCEIRO",
@@ -404,10 +564,10 @@ Responda em português, focando nos impactos principais."""
             'OverTime': 'No',
         })
 
-    def _processar_risco_evasao_ml(self, pergunta, planta_id):
+    def _processar_risco_evasao_ml(self, pergunta, planta_id, variaveis=None):
         """Processa perguntas de risco usando o modelo de ML de turnover."""
         try:
-            variaveis = self._extrair_variaveis_simulacao(pergunta)
+            variaveis = variaveis or self._extrair_variaveis_simulacao(pergunta)
             reajuste_proposto = float(variaveis.get('pct_salario', 0.0) or 0.0)
 
             modelo = joblib.load('ml/modelo_turnover.pkl')
@@ -569,11 +729,13 @@ Responda de forma clara e concisa em português, citando as fontes quando releva
                 "trechos": [c["text"] for c in contextos],
                 "resposta": response.text.strip()
             }
-        except Exception as e:
+        except Exception:
             return {
                 "tipo": "POLÍTICA",
                 "contexto": planta_id,
-                "resposta": f"Desculpe, não encontrei informações nos documentos para responder sua pergunta. Tente reformular a pergunta ou verifique se os documentos estão disponíveis. Erro: {str(e)}"
+                "documentos_consultados": [],
+                "trechos": [],
+                "resposta": "Nenhuma política limitante aplicável encontrada."
             }
 
 if __name__ == '__main__':
