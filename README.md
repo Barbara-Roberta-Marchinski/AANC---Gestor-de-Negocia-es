@@ -98,7 +98,8 @@ Este projeto foi desenvolvido com foco em privacidade e conformidade:
 
 - `app.py` possui instrumentação Langfuse para capturar spans de chat e simulações macro usando `start_as_current_observation()`.
 - `src/agentes_negociacao.py` inclui callbacks de Langfuse nos passos da CrewAI para rastrear a execução do agente de negociação.
-- `test_auditoria_agentes.py` é uma suíte de auditoria que valida a qualidade das respostas com DeepEval, usando um adaptador local para testes offline quando possível.
+- `test_auditoria_agentes.py` é uma suíte de auditoria que valida a qualidade das respostas do agente com DeepEval. A suíte agora usa um `JuizGemini` local que simula um modelo de avaliação e cobre um golden dataset de 15 perguntas e respostas esperadas.
+- O teste garante a relevância e fidelidade das respostas através de métricas de `AnswerRelevancyMetric` e `FaithfulnessMetric`, quando disponíveis.
 - Para executar os testes:
 
 ```bash
