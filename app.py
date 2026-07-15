@@ -9,6 +9,7 @@ from contextlib import nullcontext
 from dotenv import load_dotenv
 from langfuse import get_client
 from src.agent_brain import AANC_Agent
+from security_pipeline import SecurityPipeline
 
 # Configuração da página
 st.set_page_config(
@@ -449,20 +450,26 @@ with main_tab:
     st.title("🤖 AANC - Gestor de Negociações Indústria-X")
     st.markdown("Sistema inteligente para consultas sobre negociações trabalhistas e cálculos de RH.")
 
-    # Interface de chat
+    # Interface de chat (Histórico)
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
-            if "tipo" in message:
+            if "tipo" in message and message["tipo"] != 'N/A':
                 st.caption(f"Tipo: {message['tipo']} | Contexto: {message['contexto']}")
 
-    # Input do usuário
-    if prompt := st.chat_input("Digite sua pergunta sobre negociações ou cálculos..."):
+    # 1. Instancia o escudo de segurança
+    security_guard = SecurityPipeline()
+
+    # Input do utilizador (Único e com o texto atualizado)
+    if prompt := st.chat_input("Digite sua pergunta sobre negociação..."):
         if not st.session_state.get('agent_initialized', False):
             st.error("Sistema em manutenção temporária. Por favor, tente em instantes.")
         else:
-            # Detectar sinônimos de planta no texto da pergunta
-            texto_pergunta = prompt.lower()
+            # 2. SCANNER DE ENTRADA (Filtra a pergunta antes de qualquer coisa)
+            is_safe, processed_prompt = security_guard.scan_input(prompt)
+
+            # Detectar sinónimos de planta no texto da pergunta (usando o prompt seguro)
+            texto_pergunta = processed_prompt.lower()
             planta_override = None
             for sinonimo, planta_destino in (st.session_state.sinonimos_map or {}).items():
                 if re.search(rf'\b{re.escape(sinonimo)}\b', texto_pergunta):
@@ -471,178 +478,174 @@ with main_tab:
 
             contexto_planta = planta_override or planta_id
 
-            trace_ctx = nullcontext()
-            if langfuse_client is not None:
-                trace_ctx = langfuse_client.start_as_current_observation(
-                    as_type="span",
-                    name="aanc.chat_input",
-                    input=prompt,
-                    metadata={
-                        "planta_id": contexto_planta,
-                        "tab": "chat",
-                    },
-                )
+            # Adicionar mensagem do utilizador ao ecrã e ao histórico
+            st.session_state.messages.append({"role": "user", "content": processed_prompt})
+            with st.chat_message("user"):
+                st.markdown(processed_prompt)
 
-            with trace_ctx as span:
-                # Adicionar mensagem do usuário
-                st.session_state.messages.append({"role": "user", "content": prompt})
-                with st.chat_message("user"):
-                    st.markdown(prompt)
+            if planta_override:
+                st.info(f"Contexto de planta definido por sinónimo: {planta_override}")
 
-                if planta_override:
-                    st.info(f"Contexto de planta definido por sinônimo: {planta_override}")
-
-                # Processar pergunta
+            # 3. VERIFICAÇÃO DO ESCUDO
+            if not is_safe:
+                # Se for um ATAQUE: Dá o alerta de erro, para a execução e guarda no histórico
                 with st.chat_message("assistant"):
-                    try:
-                        with st.spinner("Processando sua pergunta..."):
-                            resultado = st.session_state.agent.processar_pergunta(prompt, contexto_planta)
+                    st.error(processed_prompt)
+                st.session_state.messages.append({"role": "assistant", "content": processed_prompt})
+            else:
+                # Se for SEGURO: Segue o fluxo normal com Langfuse e a IA
+                trace_ctx = nullcontext()
+                if langfuse_client is not None:
+                    trace_ctx = langfuse_client.start_as_current_observation(
+                        as_type="span",
+                        name="aanc.chat_input",
+                        input=processed_prompt,
+                        metadata={
+                            "planta_id": contexto_planta,
+                            "tab": "chat",
+                        },
+                    )
 
-                        # Verificar indicador de risco
-                        #resposta_texto = resultado.get('resposta', '').lower()
-                        #risco_alto = (
-                        #    'greve' in resposta_texto or
-                        #    'paralisação' in resposta_texto or
-                        #    any(f'{i}%' in resposta_texto for i in range(6, 101))  # impacto >5%
-                        #)
+                with trace_ctx as span:
+                    with st.chat_message("assistant"):
+                        try:
+                            with st.spinner("Analisando cenário corporativo..."):
+                                # Aciona o seu orquestrador
+                                resultado = st.session_state.agent.processar_pergunta(processed_prompt, contexto_planta)
+                                
+                                # 4. SCANNER DE SAÍDA (Filtra a resposta da IA para não vazar PII)
+                                resposta_bruta = resultado.get('resposta', 'Nenhuma resposta gerada.')
+                                resposta_segura = security_guard.scan_output(resposta_bruta)
+                                resultado['resposta'] = resposta_segura  # Atualiza o dicionário
 
-                        #if risco_alto:
-                        #    st.error("⚠️ **ALTO RISCO** - Esta resposta pode indicar impactos significativos. Consulte especialistas.")
-                        #elif 'erro' in resultado.get('tipo', '').lower():
-                        #    st.warning("⚠️ **ATENÇÃO** - Verifique os detalhes da resposta.")
-                        #else:
-                        #    st.success("✅ **BAIXO RISCO** - Resposta dentro dos parâmetros normais.")
+                                # ============================================================
+                                # EXIBIÇÃO RICA (Mantendo todas as suas lógicas originais!)
+                                # ============================================================
+                                st.markdown(f"**Tipo:** {resultado.get('tipo', 'N/A')}")
+                                st.markdown(f"**Contexto:** {resultado.get('contexto', 'N/A')}")
 
-                        # Exibir resposta
-                        st.markdown(f"**Tipo:** {resultado.get('tipo', 'N/A')}")
-                        st.markdown(f"**Contexto:** {resultado.get('contexto', 'N/A')}")
+                                if 'documentos_consultados' in resultado:
+                                    st.markdown(f"**Documentos Consultados:** {', '.join(resultado['documentos_consultados'])}")
 
-                        if 'documentos_consultados' in resultado:
-                            st.markdown(f"**Documentos Consultados:** {', '.join(resultado['documentos_consultados'])}")
+                                if 'query_sql' in resultado:
+                                    with st.expander("Ver Query SQL"):
+                                        st.code(resultado['query_sql'], language='sql')
 
-                        if 'query_sql' in resultado:
-                            with st.expander("Ver Query SQL"):
-                                st.code(resultado['query_sql'], language='sql')
+                                if 'resultado' in resultado:
+                                    with st.expander("Resultado da Consulta"):
+                                        st.dataframe(resultado['resultado'])
 
-                        if 'resultado' in resultado:
-                            with st.expander("Resultado da Consulta"):
-                                st.dataframe(resultado['resultado'])
+                                if 'variaveis_extraidas' in resultado:
+                                    with st.expander("Variáveis Extraídas"):
+                                        st.json(resultado['variaveis_extraidas'])
 
-                        if 'variaveis_extraidas' in resultado:
-                            with st.expander("Variáveis Extraídas"):
-                                st.json(resultado['variaveis_extraidas'])
+                                if 'resultado_simulacao' in resultado and resultado.get('tipo') != 'MULTIPLO':
+                                    with st.expander("Detalhes da Simulação"):
+                                        sim = resultado['resultado_simulacao']
+                                        st.metric("Custo Atual Anual", f"R$ {sim['Custo Atual']:,.2f}")
+                                        st.metric("Novo Custo Projetado Anual", f"R$ {sim['Novo Custo Projetado']:,.2f}")
+                                        st.metric("Impacto Anual Empresa", f"R$ {sim['Impacto Anual Empresa']:,.2f}", delta=f"{sim['Impacto Anual Empresa']:,.2f}")
 
-                        if 'resultado_simulacao' in resultado:
-                            with st.expander("Detalhes da Simulação"):
-                                sim = resultado['resultado_simulacao']
-                                st.metric("Custo Atual Anual", f"R$ {sim['Custo Atual']:,.2f}")
-                                st.metric("Novo Custo Projetado Anual", f"R$ {sim['Novo Custo Projetado']:,.2f}")
-                                st.metric("Impacto Anual Empresa", f"R$ {sim['Impacto Anual Empresa']:,.2f}", delta=f"{sim['Impacto Anual Empresa']:,.2f}")
+                                        detalhes = sim.get('Detalhes', {})
+                                        composicao = {
+                                            'Tipo': ['Salário', 'PLR', 'VA'],
+                                            'Custo Atual': [
+                                                detalhes.get('Salário Base Atual', 0),
+                                                detalhes.get('PLR Atual', 0),
+                                                detalhes.get('VA Atual', 0)
+                                            ],
+                                            'Novo Custo': [
+                                                detalhes.get('Novo Salário', 0),
+                                                detalhes.get('Novo PLR', 0),
+                                                detalhes.get('Novo VA', 0)
+                                            ]
+                                        }
+                                        df_composicao = pd.DataFrame(composicao)
+                                        df_composicao['Incremental'] = df_composicao['Novo Custo'] - df_composicao['Custo Atual']
+                                        st.subheader("Composição do Custo")
+                                        st.dataframe(df_composicao.style.format({
+                                            'Custo Atual': 'R$ {:,.2f}',
+                                            'Novo Custo': 'R$ {:,.2f}',
+                                            'Incremental': 'R$ {:,.2f}'
+                                        }))
 
-                                detalhes = sim.get('Detalhes', {})
-                                composicao = {
-                                    'Tipo': ['Salário', 'PLR', 'VA'],
-                                    'Custo Atual': [
-                                        detalhes.get('Salário Base Atual', 0),
-                                        detalhes.get('PLR Atual', 0),
-                                        detalhes.get('VA Atual', 0)
-                                    ],
-                                    'Novo Custo': [
-                                        detalhes.get('Novo Salário', 0),
-                                        detalhes.get('Novo PLR', 0),
-                                        detalhes.get('Novo VA', 0)
-                                    ]
-                                }
-                                df_composicao = pd.DataFrame(composicao)
-                                df_composicao['Incremental'] = df_composicao['Novo Custo'] - df_composicao['Custo Atual']
-                                st.subheader("Composição do Custo")
-                                st.dataframe(df_composicao.style.format({
-                                    'Custo Atual': 'R$ {:,.2f}',
-                                    'Novo Custo': 'R$ {:,.2f}',
-                                    'Incremental': 'R$ {:,.2f}'
-                                }))
+                                if 'benchmark_dados' in resultado:
+                                    with st.expander("Dados de Benchmark de Mercado"):
+                                        benchmark_df = pd.DataFrame(resultado['benchmark_dados'])
+                                        st.dataframe(benchmark_df)
 
-                        if 'benchmark_dados' in resultado:
-                            with st.expander("Dados de Benchmark de Mercado"):
-                                benchmark_df = pd.DataFrame(resultado['benchmark_dados'])
-                                st.dataframe(benchmark_df)
+                                        if 'nossa_pratica' in resultado and resultado['nossa_pratica']:
+                                            st.subheader("Nossa Prática Atual")
+                                            pratica_df = pd.DataFrame(resultado['nossa_pratica'])
+                                            st.dataframe(pratica_df.style.format({
+                                                'salario_medio': 'R$ {:,.2f}',
+                                                'va_medio': 'R$ {:,.2f}',
+                                                'plr_medio': 'R$ {:,.2f}'
+                                            }))
 
-                                if 'nossa_pratica' in resultado and resultado['nossa_pratica']:
-                                    st.subheader("Nossa Prática Atual")
-                                    pratica_df = pd.DataFrame(resultado['nossa_pratica'])
-                                    st.dataframe(pratica_df.style.format({
-                                        'salario_medio': 'R$ {:,.2f}',
-                                        'va_medio': 'R$ {:,.2f}',
-                                        'plr_medio': 'R$ {:,.2f}'
-                                    }))
+                                if resultado.get('tipo') == 'MULTIPLO':
+                                    st.markdown("### Resumo das Tarefas Executadas")
+                                    st.markdown(f"**Tarefas:** {', '.join(resultado.get('tarefas', []))}")
+                                    for componente in resultado.get('componentes', []):
+                                        st.markdown("---")
+                                        st.markdown(f"**{componente.get('tipo')}**")
+                                        if 'resposta' in componente:
+                                            # Garante que as respostas múltiplas também passam pelo scanner de saída
+                                            st.markdown(security_guard.scan_output(componente['resposta']))
 
-                        if resultado.get('tipo') == 'MULTIPLO':
-                            st.markdown("### Resumo das Tarefas Executadas")
-                            st.markdown(f"**Tarefas:** {', '.join(resultado.get('tarefas', []))}")
-                            for componente in resultado.get('componentes', []):
-                                st.markdown(f"---")
-                                st.markdown(f"**{componente.get('tipo')}**")
-                                if 'resposta' in componente:
-                                    st.markdown(componente['resposta'])
+                                        if componente.get('tipo') == 'RISCO_ML' and 'risco_final' in componente:
+                                            st.metric("Risco Global de Evasão", f"{componente['risco_final'] * 100:.2f}%")
 
-                                if componente.get('tipo') == 'RISCO_ML' and 'risco_final' in componente:
-                                    st.metric("Risco Global de Evasão", f"{componente['risco_final'] * 100:.2f}%")
+                                        if componente.get('tipo') == 'CÁLCULO_FINANCEIRO' and 'resultado_simulacao' in componente:
+                                            sim = componente['resultado_simulacao']
+                                            custo_atual = sim['Custo Atual']
+                                            impacto_anual = sim['Impacto Anual Empresa']
+                                            pct_aumento = (impacto_anual / custo_atual) * 100 if custo_atual > 0 else 0
+                                            col1, col2 = st.columns(2)
+                                            with col1:
+                                                st.metric("Custo Incremental Total Anual", f"R$ {impacto_anual:,.2f}")
+                                            with col2:
+                                                st.metric("% de Aumento no Budget", f"{pct_aumento:.2f}%")
+                                            if pct_aumento > 5:
+                                                st.error(f"🚨 **RISCO FINANCEIRO ELEVADO** - O aumento de {pct_aumento:.2f}% no budget excede 5%. Recomenda-se revisão cuidadosa.")
+                                else:
+                                    st.markdown("### Resposta:")
+                                    st.markdown(resposta_segura)
 
-                                if componente.get('tipo') == 'CÁLCULO_FINANCEIRO' and 'resultado_simulacao' in componente:
-                                    sim = componente['resultado_simulacao']
-                                    custo_atual = sim['Custo Atual']
-                                    impacto_anual = sim['Impacto Anual Empresa']
-                                    pct_aumento = (impacto_anual / custo_atual) * 100 if custo_atual > 0 else 0
-                                    col1, col2 = st.columns(2)
-                                    with col1:
-                                        st.metric("Custo Incremental Total Anual", f"R$ {impacto_anual:,.2f}")
-                                    with col2:
-                                        st.metric("% de Aumento no Budget", f"{pct_aumento:.2f}%")
-                                    if pct_aumento > 5:
-                                        st.error(f"🚨 **RISCO FINANCEIRO ELEVADO** - O aumento de {pct_aumento:.2f}% no budget da planta {planta_id} excede 5%. Recomenda-se revisão cuidadosa das premissas e consulta aos stakeholders.")
+                                    if resultado.get('tipo') == 'RISCO_ML' and 'risco_final' in resultado:
+                                        st.metric("Risco Global de Evasão", f"{resultado['risco_final'] * 100:.2f}%")
 
-                        else:
-                            st.markdown("### Resposta:")
-                            st.markdown(resultado.get('resposta', 'Nenhuma resposta gerada.'))
+                                    if resultado.get('tipo') == 'CÁLCULO_FINANCEIRO' and 'resultado_simulacao' in resultado:
+                                        sim = resultado['resultado_simulacao']
+                                        custo_atual = sim['Custo Atual']
+                                        impacto_anual = sim['Impacto Anual Empresa']
+                                        pct_aumento = (impacto_anual / custo_atual) * 100 if custo_atual > 0 else 0
+                                        col1, col2 = st.columns(2)
+                                        with col1:
+                                            st.metric("Custo Incremental Total Anual", f"R$ {impacto_anual:,.2f}")
+                                        with col2:
+                                            st.metric("% de Aumento no Budget", f"{pct_aumento:.2f}%")
+                                        if pct_aumento > 5:
+                                            st.error(f"🚨 **RISCO FINANCEIRO ELEVADO** - O aumento de {pct_aumento:.2f}% no budget excede 5%.")
+                                # ============================================================
 
-                            # Exibição específica para CÁLCULO_FINANCEIRO
-                            if resultado.get('tipo') == 'RISCO_ML' and 'risco_final' in resultado:
-                                st.metric("Risco Global de Evasão", f"{resultado['risco_final'] * 100:.2f}%")
-
-                            if resultado.get('tipo') == 'CÁLCULO_FINANCEIRO' and 'resultado_simulacao' in resultado:
-                                sim = resultado['resultado_simulacao']
-                                custo_atual = sim['Custo Atual']
-                                impacto_anual = sim['Impacto Anual Empresa']
-                                pct_aumento = (impacto_anual / custo_atual) * 100 if custo_atual > 0 else 0
-
-                                # Métricas principais
-                                col1, col2 = st.columns(2)
-                                with col1:
-                                    st.metric("Custo Incremental Total Anual", f"R$ {impacto_anual:,.2f}")
-                                with col2:
-                                    st.metric("% de Aumento no Budget", f"{pct_aumento:.2f}%")
-
-                                # Alerta de risco se >5%
-                                if pct_aumento > 5:
-                                    st.error(f"🚨 **RISCO FINANCEIRO ELEVADO** - O aumento de {pct_aumento:.2f}% no budget da planta {planta_id} excede 5%. Recomenda-se revisão cuidadosa das premissas e consulta aos stakeholders.")
-
-                        # Adicionar ao histórico
-                        st.session_state.messages.append({
-                            "role": "assistant",
-                            "content": resultado.get('resposta', 'Nenhuma resposta gerada.'),
-                            "tipo": resultado.get('tipo', 'N/A'),
-                            "contexto": resultado.get('contexto', 'N/A')
-                        })
-
-                        if span is not None:
-                            span.update(
-                                output=resultado.get('resposta', resultado),
-                                metadata={
+                                # Guardar no histórico e no Langfuse
+                                st.session_state.messages.append({
+                                    "role": "assistant",
+                                    "content": resposta_segura,
                                     "tipo": resultado.get('tipo', 'N/A'),
-                                    "contexto": resultado.get('contexto', 'N/A'),
-                                },
-                            )
-                    except Exception as e:
-                        error_msg = "Sistema em manutenção temporária. Por favor, tente em instantes."
-                        st.error(error_msg)
-                        st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                                    "contexto": resultado.get('contexto', 'N/A')
+                                })
+
+                                if span is not None:
+                                    span.update(
+                                        output=resposta_segura,
+                                        metadata={
+                                            "tipo": resultado.get('tipo', 'N/A'),
+                                            "contexto": resultado.get('contexto', 'N/A'),
+                                        },
+                                    )
+                        except Exception as e:
+                            error_msg = "Sistema em manutenção temporária. Por favor, tente em instantes."
+                            st.error(error_msg)
+                            st.session_state.messages.append({"role": "assistant", "content": error_msg})

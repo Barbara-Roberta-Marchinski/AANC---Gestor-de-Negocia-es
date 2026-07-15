@@ -1,0 +1,21 @@
+{
+  "total_cases": 20,
+  "approved_cases": 20,
+  "rejected_cases": 0,
+  "pass_rate": 1.0,
+  "average_scores": {
+    "relevancy_score": 1.0,
+    "faithfulness_score": 1.0,
+    "contextual_precision_score": 1.0,
+    "contextual_recall_score": 1.0,
+    "contextual_relevancy_score": 1.0
+  },
+  "best_question": {
+    "question": "Qual é o impacto de um reajuste de 5% sobre um salário base de R$ 2.500?",
+    "score": 0.9571
+  },
+  "worst_question": {
+    "question": "Qual é o impacto de um reajuste de 5% sobre um salário base de R$ 2.500?",
+    "score": 0.9571
+  }
+}

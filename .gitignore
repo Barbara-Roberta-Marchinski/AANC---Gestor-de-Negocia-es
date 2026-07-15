@@ -17,3 +17,17 @@ __pycache__/
 # Streamlit e IDE
 .streamlit/
 .vscode/
+
+#Limpeza
+rascunhos/
+
+# Logs (Evita subir logs pesados do ML como o flaml_turnover.log)
+*.log
+
+# Cache de Testes (Gerados quando você rodou o DeepEval)
+.pytest_cache/
+.deepeval/
+
+# Arquivos temporários de Sistema Operacional (Windows/Mac)
+.DS_Store
+Thumbs.db

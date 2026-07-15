@@ -13,6 +13,8 @@ except ImportError:
 
 from google import genai
 
+from src.safety_layer import SecurityGuard
+
 load_dotenv()
 
 class AANC_Agent:
@@ -44,10 +46,28 @@ class AANC_Agent:
             if not api_key:
                 raise Exception("Chave GOOGLE_API_KEY não encontrada no arquivo .env ou nas variáveis de ambiente.")
             self.client = genai.Client(api_key=api_key)
+            self.security_guard = SecurityGuard()
             print("Gemini inicializado com sucesso usando gemini-flash-latest.")
 
         except Exception as e:
             raise Exception(f"Erro ao inicializar AANC_Agent: {str(e)}")
+
+    def _call_llm_with_guardrails(self, prompt, model='gemini-flash-latest'):
+        """Sanitiza prompt e resposta antes de chamar o modelo LLM."""
+        sanitized_prompt, prompt_meta = self.security_guard.sanitize_user_input(prompt)
+        if prompt_meta.get("blocked"):
+            return self.security_guard.block_message
+
+        try:
+            response = self.client.models.generate_content(model=model, contents=sanitized_prompt)
+            response_text = getattr(response, "text", None) or ""
+            safe_text, output_meta = self.security_guard.sanitize_model_output(response_text)
+            if output_meta.get("blocked"):
+                return self.security_guard.block_message
+            return safe_text
+        except Exception as exc:
+            print(f"Erro ao chamar modelo: {exc}")
+            return self.security_guard.block_message
 
     def _classificar_intencao(self, pergunta):
         """
@@ -72,8 +92,8 @@ Pergunta: "{pergunta}"
 Responda apenas com uma das palavras: 'CÁLCULO', 'POLÍTICA', 'CÁLCULO_FINANCEIRO', 'BENCHMARK' ou 'CONSULTA_ESTRATEGICA'."""
 
         try:
-            response = self.client.models.generate_content(model='gemini-flash-latest', contents=prompt)
-            intencao = response.text.strip().upper()
+            response_text = self._call_llm_with_guardrails(prompt)
+            intencao = response_text.strip().upper()
             if intencao in ['CÁLCULO', 'POLÍTICA', 'CÁLCULO_FINANCEIRO', 'BENCHMARK', 'CONSULTA_ESTRATEGICA']:
                 return intencao
             return None
@@ -109,8 +129,7 @@ Instruções:
 Usuário: "{pergunta}"
 """
         try:
-            response = self.client.models.generate_content(model='gemini-flash-latest', contents=prompt)
-            texto = response.text.strip()
+            texto = self._call_llm_with_guardrails(prompt).strip()
             import json, re, ast
 
             # Extrair JSON do texto, se existir
@@ -391,14 +410,14 @@ INSTRUÇÕES:
 
 Responda em português, usando a frase: "Para a [Empresa/Planta], o mercado (Benchmark) praticou X%. Já o nosso documento (ACT/CCT) prevê Y.""" 
 
-            response = self.client.models.generate_content(model='gemini-flash-latest', contents=prompt)
+            response_text = self._call_llm_with_guardrails(prompt)
 
             return {
                 "tipo": "CONSULTA_ESTRATEGICA",
                 "contexto": planta_id,
                 "benchmark_dados": benchmark_df.to_dict('records'),
                 "documentos_consultados": arquivos_consultados,
-                "resposta": response.text.strip()
+                "resposta": response_text.strip()
             }
         except Exception as e:
             return {
@@ -430,8 +449,8 @@ Use as tabelas disponíveis:
 
 Retorne apenas a query SQL, sem explicações."""
 
-            response = self.client.models.generate_content(model='gemini-flash-latest', contents=prompt)
-            sql_query = response.text.strip()
+            response_text = self._call_llm_with_guardrails(prompt)
+            sql_query = response_text.strip()
 
             # Executar query
             resultado = self.dm.executar_consulta(sql_query)
@@ -490,8 +509,7 @@ Destaque que o cálculo incluiu:
 Responda em português, focando nos impactos principais."""
 
             try:
-                response = self.client.models.generate_content(model='gemini-flash-latest', contents=prompt_explicacao)
-                explicacao = response.text.strip()
+                explicacao = self._call_llm_with_guardrails(prompt_explicacao).strip()
             except Exception as e:
                 print(f"Gemini indisponível para explicação financeira: {e}")
                 explicacao = (
@@ -677,14 +695,14 @@ INSTRUÇÕES PARA RESPOSTA:
 
 Responda em português de forma clara e objetiva."""
 
-            response = self.client.models.generate_content(model='gemini-flash-latest', contents=prompt)
+            response_text = self._call_llm_with_guardrails(prompt)
 
             return {
                 "tipo": "BENCHMARK",
                 "contexto": planta_id,
                 "benchmark_dados": benchmark_df.to_dict('records'),
                 "nossa_pratica": nossa_pratica_df.to_dict('records'),
-                "resposta": response.text.strip()
+                "resposta": response_text.strip()
             }
         except Exception as e:
             return {
@@ -711,23 +729,28 @@ Responda em português de forma clara e objetiva."""
 
             # Usar Gemini para gerar resposta
             contexto_texto = "\n---\n".join([c["text"] for c in contextos])
-            prompt = f"""Baseado no seguinte contexto dos documentos da planta {planta_id}, responda à pergunta do usuário:
+            prompt = f"""Você é um assistente corporativo de Negociações Trabalhistas e RH.
+Sua missão é responder às dúvidas dos gestores utilizando APENAS as cláusulas e informações presentes no contexto fornecido da planta {planta_id}.
+
+REGRA DE SEGURANÇA (Anti-Alucinação): Se a informação solicitada não estiver claramente descrita no contexto que você recebeu, NUNCA invente uma resposta e não use jargões robóticos. 
+Em vez disso, responda de forma natural, educada e empática, parecendo um humano. Diga algo como: "Poxa, desculpe! Verifiquei os trechos do Acordo Coletivo consultados agora, mas não encontrei nenhuma cláusula que fale especificamente sobre esse tema. Quer tentar reformular a pergunta ou buscar por outro benefício?"
+
 
 CONTEXTO:
 {contexto_texto}
 
 PERGUNTA: "{pergunta}"
 
-Responda de forma clara e concisa em português, citando as fontes quando relevante."""
+Responda de forma clara e concisa em português, citando as fontes APENAS quando a informação estiver presente."""
 
-            response = self.client.models.generate_content(model='gemini-flash-latest', contents=prompt)
+            response_text = self._call_llm_with_guardrails(prompt)
 
             return {
                 "tipo": "POLÍTICA",
                 "contexto": planta_id,
                 "documentos_consultados": [c["file"] for c in contextos],
                 "trechos": [c["text"] for c in contextos],
-                "resposta": response.text.strip()
+                "resposta": response_text.strip()
             }
         except Exception:
             return {

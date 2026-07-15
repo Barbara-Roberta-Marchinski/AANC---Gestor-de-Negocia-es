@@ -1,0 +1,21 @@
+{
+  "total_cases": 20,
+  "approved_cases": 19,
+  "rejected_cases": 1,
+  "pass_rate": 0.95,
+  "average_scores": {
+    "relevancy_score": 0.95,
+    "faithfulness_score": 1.0,
+    "contextual_precision_score": null,
+    "contextual_recall_score": null,
+    "contextual_relevancy_score": null
+  },
+  "best_question": {
+    "question": "Quais são os principais encargos que impactam o custo da folha de pagamento?",
+    "score": 0.925
+  },
+  "worst_question": {
+    "question": "Qual é o impacto de um reajuste de 5% sobre um salário base de R$ 2.500?",
+    "score": 0.425
+  }
+}
